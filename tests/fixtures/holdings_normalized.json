@@ -1,0 +1,91 @@
+{
+  "fetched_at": "2026-06-11T00:00:00+00:00",
+  "holdings": [
+    {
+      "symbol": "MTARTECH",
+      "exchange": "NSE",
+      "qty": 12,
+      "avg_price": 1944.2125,
+      "ltp": 7106.5,
+      "close_price": 7458.0,
+      "invested": 23330.55,
+      "current_value": 85278.0,
+      "pnl": 61947.45,
+      "pnl_pct": 265.52,
+      "day_change": -351.5,
+      "day_change_pct": -4.713,
+      "weight_pct": 59.15
+    },
+    {
+      "symbol": "AURIONPRO",
+      "exchange": "NSE",
+      "qty": 17,
+      "avg_price": 1615.532352,
+      "ltp": 742.0,
+      "close_price": 766.4,
+      "invested": 27464.05,
+      "current_value": 12614.0,
+      "pnl": -14850.05,
+      "pnl_pct": -54.07,
+      "day_change": -24.4,
+      "day_change_pct": -3.184,
+      "weight_pct": 8.75
+    },
+    {
+      "symbol": "ASIANPAINT",
+      "exchange": "BSE",
+      "qty": 5,
+      "avg_price": 2936.31,
+      "ltp": 2700.0,
+      "close_price": 2708.1,
+      "invested": 14681.55,
+      "current_value": 13500.0,
+      "pnl": -1181.55,
+      "pnl_pct": -8.05,
+      "day_change": -8.1,
+      "day_change_pct": -0.299,
+      "weight_pct": 9.36
+    },
+    {
+      "symbol": "JUNIORBEES",
+      "exchange": "NSE",
+      "qty": 35,
+      "avg_price": 734.818571,
+      "ltp": 748.52,
+      "close_price": 755.35,
+      "invested": 25718.65,
+      "current_value": 26198.2,
+      "pnl": 479.55,
+      "pnl_pct": 1.86,
+      "day_change": -6.83,
+      "day_change_pct": -0.904,
+      "weight_pct": 18.17
+    },
+    {
+      "symbol": "AXISBANK",
+      "exchange": "BSE",
+      "qty": 5,
+      "avg_price": 1076.15,
+      "ltp": 1314.6,
+      "close_price": 1292.6,
+      "invested": 5380.75,
+      "current_value": 6573.0,
+      "pnl": 1192.25,
+      "pnl_pct": 22.16,
+      "day_change": 22.0,
+      "day_change_pct": 1.702,
+      "weight_pct": 4.56
+    }
+  ],
+  "summary": {
+    "total_invested": 96575.55,
+    "current_value": 144163.2,
+    "total_pnl": 47587.65,
+    "total_pnl_pct": 49.28,
+    "day_pnl": -4802.35,
+    "day_pnl_pct": -3.22,
+    "holdings_count": 5,
+    "winners": 3,
+    "losers": 2
+  }
+}

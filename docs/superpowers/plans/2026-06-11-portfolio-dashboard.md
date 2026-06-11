@@ -130,13 +130,6 @@ pip install -r dashboard/requirements.txt
 ```
 Expected: deps install cleanly.
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add .gitignore README.md dashboard/requirements.txt tests/__init__.py
-git commit -m "chore: project skeleton for portfolio dashboard"
-```
-
 ---
 
 ## Task 2: Test Fixtures
@@ -308,6 +301,7 @@ Note: `weight_pct` values are intentionally based on `current_value / sum(curren
 
 - [ ] **Step 3: Create `tests/fixtures/holdings_schema.json`** (JSON schema for the output contract)
 
+
 ```json
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -361,13 +355,6 @@ Note: `weight_pct` values are intentionally based on `current_value / sum(curren
     }
   }
 }
-```
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add tests/fixtures/
-git commit -m "test: add fixtures for normalizer (5-stock sample + schema)"
 ```
 
 ---
@@ -560,13 +547,6 @@ def atomic_write_json(path: str, data: dict) -> None:
 Run: `pytest tests/test_fetch_holdings.py::test_normalize_holdings_matches_expected tests/test_fetch_holdings.py::test_normalize_holdings_empty tests/test_fetch_holdings.py::test_normalize_holdings_schema_valid tests/test_fetch_holdings.py::test_normalize_holdings_empty_schema_valid -v`
 Expected: 4 passed.
 
-- [ ] **Step 6: Commit**
-
-```bash
-git add dashboard/__init__.py dashboard/fetch_holdings.py tests/test_fetch_holdings.py
-git commit -m "feat: normalize_holdings transform with schema validation"
-```
-
 ---
 
 ## Task 4: `atomic_write_json` — Crash-Safe Writes (TDD)
@@ -623,13 +603,6 @@ def test_atomic_write_failure_leaves_original(tmp_path, monkeypatch):
 
 Run: `pytest tests/test_fetch_holdings.py -v`
 Expected: 7 passed (4 prior + 3 new). Implementation already exists from Task 3.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add tests/test_fetch_holdings.py
-git commit -m "test: cover atomic_write_json crash-safety"
-```
 
 ---
 
@@ -812,13 +785,6 @@ if __name__ == "__main__":
 
 Run: `pytest tests/test_launch.py -v`
 Expected: 6 passed.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add dashboard/launch.py tests/test_launch.py
-git commit -m "feat: launch helpers (find_free_port, is_stale, launch_streamlit)"
-```
 
 ---
 
@@ -1092,15 +1058,7 @@ cp tests/fixtures/holdings_normalized.json data/holdings.json
 echo "# Insights\n\nManual smoke test." > data/insights.md
 streamlit run dashboard/app.py --server.headless true --server.port 8501
 ```
-Open `http://localhost:8501`. Verify: KPIs show, table renders, treemap appears, winners/losers panels populated. Stop with Ctrl+C. Remove `data/` (covered by `.gitignore`) before committing.
-
-- [ ] **Step 6: Commit**
-
-```bash
-rm -rf data/
-git add dashboard/app.py tests/test_app.py
-git commit -m "feat: streamlit dashboard with KPIs, table, treemap, insights"
-```
+Open `http://localhost:8501`. Verify: KPIs show, table renders, treemap appears, winners/losers panels populated. Stop with Ctrl+C.
 
 ---
 
@@ -1158,13 +1116,6 @@ Pull the user's current holdings from the Kite MCP server, transform them with t
 - **Empty holdings:** still write a valid file (empty array, zeroed summary). Report "no holdings found" and continue.
 ```
 
-- [ ] **Step 2: Commit**
-
-```bash
-git add .claude/skills/fetch-holdings/SKILL.md
-git commit -m "feat: fetch-holdings skill"
-```
-
 ---
 
 ## Task 8: `generate-insights` Skill
@@ -1213,13 +1164,6 @@ After `fetch-holdings` writes `data/holdings.json`. Always re-run when holdings 
 - No financial advice. Observations only.
 ```
 
-- [ ] **Step 2: Commit**
-
-```bash
-git add .claude/skills/generate-insights/SKILL.md
-git commit -m "feat: generate-insights skill"
-```
-
 ---
 
 ## Task 9: `launch-dashboard` Skill
@@ -1255,13 +1199,6 @@ After `fetch-holdings` and `generate-insights` have written `data/holdings.json`
 - **All ports 8501–8510 busy:** report the error and tell the user to run `pkill -f streamlit` or pick a free port range.
 - **Streamlit not installed:** tell the user to run `pip install -r dashboard/requirements.txt` from the project root.
 - **dashboard/app.py missing:** report which file is missing.
-```
-
-- [ ] **Step 2: Commit**
-
-```bash
-git add .claude/skills/launch-dashboard/SKILL.md
-git commit -m "feat: launch-dashboard skill"
 ```
 
 ---
@@ -1332,13 +1269,6 @@ If the argument is `refresh`, perform the same chain (it overwrites the data fil
 If the user is not logged in to Kite, surface the login URL from `mcp__kite__login` and stop.
 ```
 
-- [ ] **Step 3: Commit**
-
-```bash
-git add .claude/agents/portfolio-agent.md .claude/commands/portfolio.md
-git commit -m "feat: portfolio-agent and /portfolio slash command"
-```
-
 ---
 
 ## Task 11: End-to-End Manual Verification
@@ -1374,14 +1304,6 @@ Expected: holdings re-fetched, dashboard auto-reloads (Streamlit detects file ch
 
 Run: `cd /Users/ashunsah/Desktop/Stocks && source .venv/bin/activate && pytest tests/ -v`
 Expected: all tests pass.
-
-- [ ] **Step 7: Final commit (if anything was tweaked)**
-
-```bash
-git status
-# If clean, nothing to commit
-# If files changed during smoke testing, commit them with a "fix:" or "chore:" message
-```
 
 ---
 

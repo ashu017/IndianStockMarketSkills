@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Runtime data
+data/
+.streamlit.pid
+.streamlit.port
+*.tmp
+
+# OS
+.DS_Store

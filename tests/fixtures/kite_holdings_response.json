@@ -1,0 +1,57 @@
+[
+  {
+    "tradingsymbol": "MTARTECH",
+    "exchange": "NSE",
+    "quantity": 12,
+    "average_price": 1944.2125,
+    "last_price": 7106.5,
+    "close_price": 7458.0,
+    "pnl": 61947.45,
+    "day_change": -351.5,
+    "day_change_percentage": -4.713
+  },
+  {
+    "tradingsymbol": "AURIONPRO",
+    "exchange": "NSE",
+    "quantity": 17,
+    "average_price": 1615.532352,
+    "last_price": 742.0,
+    "close_price": 766.4,
+    "pnl": -14850.05,
+    "day_change": -24.4,
+    "day_change_percentage": -3.184
+  },
+  {
+    "tradingsymbol": "ASIANPAINT",
+    "exchange": "BSE",
+    "quantity": 5,
+    "average_price": 2936.31,
+    "last_price": 2700.0,
+    "close_price": 2708.1,
+    "pnl": -1181.55,
+    "day_change": -8.1,
+    "day_change_percentage": -0.299
+  },
+  {
+    "tradingsymbol": "JUNIORBEES",
+    "exchange": "NSE",
+    "quantity": 35,
+    "average_price": 734.818571,
+    "last_price": 748.52,
+    "close_price": 755.35,
+    "pnl": 479.55,
+    "day_change": -6.83,
+    "day_change_percentage": -0.904
+  },
+  {
+    "tradingsymbol": "AXISBANK",
+    "exchange": "BSE",
+    "quantity": 5,
+    "average_price": 1076.15,
+    "last_price": 1314.6,
+    "close_price": 1292.6,
+    "pnl": 1192.25,
+    "day_change": 22.0,
+    "day_change_percentage": 1.702
+  }
+]
