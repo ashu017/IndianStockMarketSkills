@@ -19,3 +19,6 @@ data/
 # Rendered PlantUML output
 docs/superpowers/specs/diagrams/*.svg
 docs/superpowers/specs/diagrams/*.png
+
+# Local MCP config (contains secrets)
+.mcp.json
