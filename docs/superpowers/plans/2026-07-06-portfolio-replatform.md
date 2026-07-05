@@ -924,8 +924,24 @@ git add -A && git commit -m "feat: integrate overview + deep-dive + refresh (par
 
 ---
 
+## Phase 3 — Ingestion glue (follow-up, NOT yet done)
+
+### Task 10: Agent-side Kite → ingest glue (replaces the old `fetch-holdings` skill)
+
+**Why:** `scripts/ingest.ts` consumes an `INGEST_PAYLOAD` (holdings in minor units) but nothing produces it yet. Until this exists, the Next app has no live data path — the 3 legacy skills (`fetch-holdings`, `generate-insights`, `launch-dashboard`) are intentionally KEPT so the old `/portfolio` flow keeps working. Retire them only after this task lands.
+
+**Files:**
+- Create: `lib/ingest/build-payload.ts` — pure `buildPayload(kiteHoldings, quotes)` using `lib/ingest/kite-normalize.ts` + `lib/money.ts`, returning the full `SnapshotPayload` (meta + holdings + computed totals in paise).
+- Rewrite: `.claude/skills/fetch-holdings/SKILL.md` — call `mcp__kite__get_holdings`, pass through `buildPayload`, set `INGEST_PAYLOAD`, run `npx tsx scripts/ingest.ts` (or `POST /api/refresh`). On Kite auth error, surface login URL and stop (unchanged behavior).
+- Optional: fold `generate-insights` (narrative) into the ingestion (writes `analysis` table) and retire `launch-dashboard` (replaced by `next dev`/`next start`).
+- Test: `tests/build-payload.test.ts` — sample Kite holdings → correct minor-unit payload + totals.
+
+**Then:** retire the 3 legacy skills (design §9) once end-to-end (Kite → SQLite → dashboard) is verified.
+
+---
+
 ## Self-review notes
 
-- **Spec coverage:** schema §4 → Task 2; money/derive §4 → Tasks 3–4; RSC-only §3/§5 → Tasks 6–7; ingestion §6 → Tasks 5,8; API doc §1/§2/§3 → Tasks 4,8, types in Task 3; retirement §9 → Task 9. Deferred items (multi-user, hosting) intentionally not tasked.
+- **Spec coverage:** schema §4 → Task 2; money/derive §4 → Tasks 3–4; RSC-only §3/§5 → Tasks 6–7; ingestion §6 → Tasks 5,8; API doc §1/§2/§3 → Tasks 4,8, types in Task 3; retirement §9 → Task 9 (Streamlit) + Task 10 (skills, after glue). Deferred items (multi-user, hosting) intentionally not tasked.
 - **Known simplifications (flag for review during execution):** grade thresholds in `lib/grades.ts` are a minimal viable set (design wants fuller sector coverage); Screener HTML parsing in `screener.ts` is stubbed (the real selector logic is written against live HTML during WT-A); narrative generation is agent-side (not in these tasks — the ingest CLI receives it in its payload).
 - **Type consistency:** `HoldingRow`/`Holding`/`FundamentalItem`/`Peer` defined once in Task 3, imported everywhere. Seam frozen at end of Task 4.
