@@ -3,6 +3,7 @@
 **Date:** 2026-07-06
 **Status:** Approved design, pending implementation plan
 **Supersedes:** the Streamlit + local-JSON dashboard (`dashboard/app.py`, `data/*.json`) and the Python skills wiring for the dashboard UI.
+**Companions:** `2026-07-06-api-definitions.md` (data seam + HTTP + UI types); `diagrams/` (schema ERD, architecture, refresh sequence — PlantUML).
 
 ---
 

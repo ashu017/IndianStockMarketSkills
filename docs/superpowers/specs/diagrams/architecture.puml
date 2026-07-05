@@ -1,0 +1,78 @@
+@startuml architecture
+' Portfolio Dashboard — overall architecture (local, single-user)
+' Source of truth: 2026-07-06-portfolio-replatform-design.md §3/§4a/§6
+
+skinparam componentStyle rectangle
+skinparam rectangle {
+  BackgroundColor #FDFDFD
+  BorderColor #444
+}
+skinparam ArrowColor #555
+title Portfolio Dashboard — Local Architecture (Next.js + SQLite + Node/TS ingestion)
+
+actor "User\n(browser)" as user
+
+package "Next.js app  (next dev; Vercel later)" #EEF6FF {
+  package "App Router" {
+    component "app/page.tsx\nOverview (RSC)\ndynamic=force-dynamic" as overview
+    component "app/stock/[symbol]/page.tsx\nDeep-Dive (RSC)\ndynamic=force-dynamic" as deep
+    component "app/api/refresh\nRoute Handler" as refreshapi
+  }
+  package "Client leaves ('use client')" {
+    component "Recharts leaves\n(next/dynamic ssr:false)" as charts
+    component "Nav / Refresh button" as nav
+  }
+  package "Server libs (server-only)" {
+    component "lib/db.ts\nasync, user-scoped seam\nWAL + busy_timeout + FK=ON" as db
+    component "lib/derive.ts\npnl / weight / pct\n(minor units)" as derive
+    component "lib/money.ts\nscale + rounding" as money
+    component "mappers\n(DB snake -> UI camel)" as map
+  }
+}
+
+database "SQLite file\n(+ -wal, -shm)\nINTEGER money, TEXT dates" as sqlite
+
+package "Ingestion (local, on-demand, single writer process)" #F3FFF3 {
+  component "portfolio-agent\n(Claude)" as agent
+  component "ingest writer (Node/TS)\nbetter-sqlite3, one txn" as writer
+  component "Screener adapter\n(validated, fetch_status)" as screener
+  component "LLM narrative step\n-> analysis table" as narr
+}
+
+cloud "Kite MCP\n(daily OAuth token)" as kite
+cloud "Screener.in" as screenersite
+
+' Read path
+user --> overview
+user --> deep
+overview --> db
+deep --> db
+db --> derive
+derive --> money
+db --> map
+overview ..> charts : "plain serializable props"
+deep ..> charts
+charts --> map
+db --> sqlite : "async reads (RSC)"
+
+' Refresh path
+nav --> refreshapi : "POST"
+refreshapi --> agent : "spawn ingestion process"
+refreshapi ..> overview : "revalidatePath('/')"
+
+' Ingestion path
+agent --> kite : "get_holdings, quotes"
+agent --> writer
+writer --> screener
+screener --> screenersite : "scrape (best-effort)"
+agent --> narr
+narr --> writer
+writer --> sqlite : "upsert (ON CONFLICT), one txn\nstock_meta -> snapshots"
+
+note bottom of sqlite
+  Single writer process (ingestion). RSC readers use WAL so
+  reads never block the writer. Refresh route spawns ingestion,
+  never writes in-process.
+end note
+
+@enduml

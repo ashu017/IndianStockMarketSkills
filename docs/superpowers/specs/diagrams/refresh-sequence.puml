@@ -1,0 +1,67 @@
+@startuml refresh-sequence
+' Portfolio Dashboard — refresh (ingestion) sequence
+' Source of truth: 2026-07-06-portfolio-replatform-design.md §6
+
+autonumber
+skinparam sequenceMessageAlign center
+title Refresh flow — on-demand ingestion (single writer)
+
+actor User
+participant "Refresh button\n(client leaf)" as UI
+participant "app/api/refresh\n(Route Handler)" as API
+participant "portfolio-agent\n(Claude)" as Agent
+participant "Kite MCP" as Kite
+participant "Screener adapter" as Screener
+participant "LLM narrative" as LLM
+participant "ingest writer\n(better-sqlite3)" as Writer
+database "SQLite" as DB
+participant "Overview RSC" as RSC
+
+User -> UI : click Refresh
+UI -> API : POST /api/refresh
+API -> Agent : spawn ingestion process
+
+group Holdings (blocking path)
+  Agent -> Kite : get_holdings, get_quotes
+  alt token expired
+    Kite --> Agent : auth error
+    Agent --> API : {status:"login_required", loginUrl}
+    API --> UI : surface Kite login URL, stop
+  else authenticated
+    Kite --> Agent : holdings + quotes
+  end
+end
+
+group Fundamentals (decoupled, best-effort)
+  Agent -> Screener : fetch(symbol/isin)
+  Screener -> Screener : validate schema
+  alt scrape ok
+    Screener --> Agent : ratios + peers (fetch_status=ok)
+  else scrape failed
+    Screener --> Agent : fetch_status=failed (keep last good, stale-labeled)
+  end
+  Agent -> LLM : generate narrative(isin, fundamentals)
+  LLM --> Agent : narrative + model/prompt version
+end
+
+group Write (single transaction, IST snapshot_date)
+  Agent -> Writer : normalized payload (minor units)
+  Writer -> DB : BEGIN
+  Writer -> DB : upsert stock_meta (ON CONFLICT)
+  Writer -> DB : upsert holding_snapshots (ON CONFLICT)
+  Writer -> DB : upsert portfolio_snapshots (ON CONFLICT)
+  Writer -> DB : upsert fundamentals / fundamentals_extra / peers / analysis
+  Writer -> DB : COMMIT
+  DB --> Writer : ok
+end
+
+Writer --> Agent : done
+Agent --> API : {status:"ok", snapshot_date}
+API -> RSC : revalidatePath('/')
+API --> UI : 200 ok
+UI -> RSC : router.refresh()
+RSC -> DB : async read (WAL, non-blocking)
+DB --> RSC : latest snapshot
+RSC --> User : updated dashboard ("as of <ts>")
+
+@enduml

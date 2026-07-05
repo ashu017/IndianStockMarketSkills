@@ -1,0 +1,141 @@
+@startuml schema
+' Portfolio Dashboard — SQLite data schema (Postgres-portable)
+' Source of truth: 2026-07-06-portfolio-replatform-design.md §4/§4a
+' Money is stored as INTEGER minor units (paise ×100; prices ×10000).
+' Dates: TEXT 'YYYY-MM-DD' (IST). Timestamps: TEXT ISO-8601 UTC.
+
+hide circle
+skinparam linetype ortho
+skinparam classAttributeIconSize 0
+skinparam class {
+  BackgroundColor #FDFDFD
+  BorderColor #444
+  ArrowColor #666
+}
+legend top left
+  PK = primary key   U = unique constraint (ON CONFLICT target)
+  FK = foreign key   idx = index
+  <b>User-scoped</b> tables carry user_id (RLS at Postgres).
+  <b>Global</b> reference tables are world-readable.
+  All money columns are INTEGER minor units.
+endlegend
+
+package "Reference data (Global)" #EEF6FF {
+
+  class stock_meta <<Global>> {
+    .. PK ..
+    + symbol : TEXT
+    + exchange : TEXT  <<'NSE'|'BSE'>>
+    .. attributes ..
+    isin : TEXT  <<idx, cross-exchange identity>>
+    company : TEXT
+    sector : TEXT
+  }
+
+  class fundamentals <<Global>> {
+    .. U (isin, as_of_date) ..
+    + isin : TEXT
+    + as_of_date : TEXT  <<YYYY-MM-DD>>
+    .. universal ratios (numeric) ..
+    pe : REAL
+    pb : REAL
+    roe : REAL
+    roce : REAL
+    debt_equity : REAL
+    sales_growth_3y : REAL
+    profit_growth_3y : REAL
+    div_yield : REAL
+    market_cap : INTEGER  <<paise>>
+    promoter_holding : REAL
+    .. provenance ..
+    fetched_at : TEXT  <<ISO-8601 UTC>>
+    source : TEXT
+    source_url : TEXT
+    fetch_status : TEXT  <<ok|stale|failed>>
+  }
+
+  class fundamentals_extra <<Global>> {
+    .. U (isin, as_of_date, metric_key) ..
+    + isin : TEXT
+    + as_of_date : TEXT
+    + metric_key : TEXT  <<enum per sector: gross_npa,nim,casa,car...>>
+    .. value ..
+    value_num : REAL
+    unit : TEXT
+  }
+
+  class peers <<Global>> {
+    .. U (isin, as_of_date, peer_symbol) ..
+    + isin : TEXT  <<subject stock>>
+    + as_of_date : TEXT
+    + peer_symbol : TEXT
+    .. attributes ..
+    peer_company : TEXT
+    pe : REAL
+    roe : REAL
+    roce : REAL
+    sales_growth : REAL
+  }
+
+  class analysis <<Global>> {
+    .. U (isin) — latest-wins cache ..
+    + isin : TEXT
+    .. attributes ..
+    narrative : TEXT
+    generated_at : TEXT  <<ISO-8601 UTC>>
+    model_version : TEXT
+    prompt_version : TEXT
+  }
+}
+
+package "Portfolio data (User-scoped)" #F3FFF3 {
+
+  class holding_snapshots <<User>> {
+    .. U (user_id, snapshot_date, symbol, exchange) ..
+    + user_id : TEXT
+    + snapshot_date : TEXT  <<YYYY-MM-DD, IST>>
+    + symbol : TEXT
+    + exchange : TEXT
+    .. raw facts (INTEGER minor units) ..
+    qty : INTEGER
+    avg_price : INTEGER  <<x10000>>
+    ltp : INTEGER  <<paise>>
+    close_price : INTEGER  <<paise>>
+    .. idx (user_id, symbol, snapshot_date) ..
+  }
+
+  class portfolio_snapshots <<User>> {
+    .. U (user_id, snapshot_date) ..
+    + user_id : TEXT
+    + snapshot_date : TEXT  <<YYYY-MM-DD, IST>>
+    .. daily totals (INTEGER paise) ..
+    current_value : INTEGER
+    invested : INTEGER
+    total_pnl : INTEGER
+    day_pnl : INTEGER
+    .. denormalized aggregates (acknowledged) ..
+    holdings_count : INTEGER
+    winners : INTEGER
+    losers : INTEGER
+  }
+}
+
+class "v_holdings_current" as vcur <<view>> #FFF7E6 {
+  latest holding_snapshots row
+  per (user_id, symbol)
+  --
+  ROW_NUMBER() OVER (
+    PARTITION BY user_id, symbol
+    ORDER BY snapshot_date DESC) = 1
+}
+
+' Relationships
+holding_snapshots }o--|| stock_meta : "FK (symbol, exchange)\nPRAGMA foreign_keys=ON"
+fundamentals }o--|| stock_meta : "isin"
+fundamentals_extra }o--|| fundamentals : "(isin, as_of_date)"
+peers }o--|| stock_meta : "isin (subject)"
+analysis }o--|| stock_meta : "isin"
+vcur ..> holding_snapshots : "derives from"
+portfolio_snapshots ..> holding_snapshots : "totals recomputable from"
+
+@enduml

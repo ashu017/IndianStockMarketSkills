@@ -15,3 +15,7 @@ data/
 
 # OS
 .DS_Store
+
+# Rendered PlantUML output
+docs/superpowers/specs/diagrams/*.svg
+docs/superpowers/specs/diagrams/*.png
