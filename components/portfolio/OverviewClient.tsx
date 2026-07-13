@@ -309,20 +309,13 @@ export default function OverviewClient({ holdings, summary, insights }: Props) {
     router.push(`/stock/${encodeURIComponent(h.symbol)}?exchange=${h.exchange}`);
   }
 
-  async function handleRefresh() {
+  // MCP flow: new data is pulled by the `/portfolio` command (agent → MCP →
+  // ingest). The in-app button just re-reads the latest snapshot from SQLite.
+  function handleRefresh() {
     setRefreshing(true);
-    try {
-      const res = await fetch("/api/refresh", { method: "POST" });
-      const j = await res.json();
-      if (j.status === "login_required" && j.loginUrl) {
-        // Same-tab redirect to Kite login; the callback returns to the dashboard.
-        window.location.href = j.loginUrl;
-        return;
-      }
-      router.refresh();
-    } finally {
-      setRefreshing(false);
-    }
+    router.refresh();
+    // router.refresh() re-renders the server component; clear the spinner shortly after.
+    setTimeout(() => setRefreshing(false), 800);
   }
 
   return (
