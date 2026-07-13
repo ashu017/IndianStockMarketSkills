@@ -314,7 +314,11 @@ export default function OverviewClient({ holdings, summary, insights }: Props) {
     try {
       const res = await fetch("/api/refresh", { method: "POST" });
       const j = await res.json();
-      if (j.status === "login_required" && j.loginUrl) window.open(j.loginUrl, "_blank");
+      if (j.status === "login_required" && j.loginUrl) {
+        // Same-tab redirect to Kite login; the callback returns to the dashboard.
+        window.location.href = j.loginUrl;
+        return;
+      }
       router.refresh();
     } finally {
       setRefreshing(false);

@@ -78,6 +78,18 @@ CREATE TABLE IF NOT EXISTS peers (
   UNIQUE (isin, as_of_date, peer_symbol)
 );
 
+-- Cached Kite Connect access token (one row per user). access_token expires at
+-- ~6 AM IST next day (regulatory); expires_at is stored so ingestion knows when
+-- to force a fresh login instead of calling the API with a dead token.
+CREATE TABLE IF NOT EXISTS kite_session (
+  user_id      TEXT NOT NULL,
+  access_token TEXT NOT NULL,
+  kite_user_id TEXT,
+  login_time   TEXT,                        -- ISO-8601 UTC
+  expires_at   TEXT NOT NULL,               -- ISO-8601 UTC (next 6 AM IST)
+  UNIQUE (user_id)
+);
+
 CREATE TABLE IF NOT EXISTS analysis (
   isin           TEXT NOT NULL,
   narrative      TEXT,

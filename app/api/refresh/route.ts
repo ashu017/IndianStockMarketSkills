@@ -18,15 +18,19 @@ export async function POST() {
         { status: 500 },
       );
     }
-    revalidatePath("/");
     // The ingest CLI prints one JSON line on stdout. Guard the parse so a
     // non-JSON line (or empty output) still yields a well-formed response.
-    let body: unknown = { status: "ok" };
+    let body: { status?: string; [k: string]: unknown } = { status: "ok" };
     try {
       body = JSON.parse(res.stdout);
     } catch {
       body = { status: "ok", note: "ingest produced no parseable output" };
     }
+    // No valid Kite session → tell the client where to connect.
+    if (body.status === "login_required") {
+      return NextResponse.json({ status: "login_required", loginUrl: "/api/kite/login" });
+    }
+    revalidatePath("/");
     return NextResponse.json(body);
   } finally {
     releaseLock();
