@@ -70,6 +70,8 @@ export interface PeerRow {
 export interface AnalysisRow {
   isin: string;
   narrative: string | null;
+  verdict: string | null;
+  confidence: string | null;
   generated_at: string | null;
   model_version: string | null;
   prompt_version: string | null;

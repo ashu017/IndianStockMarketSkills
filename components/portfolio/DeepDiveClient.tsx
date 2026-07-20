@@ -19,6 +19,8 @@ interface Props {
   holding: Holding;
   fundamentals: FundamentalItem[];
   analysis: string | null;
+  verdict?: string | null;
+  confidence?: string | null;
   peers: Peer[];
   portfolioCurrentValue: number;
   seed: number;
@@ -86,6 +88,8 @@ export default function DeepDiveClient({
   holding,
   fundamentals,
   analysis,
+  verdict,
+  confidence,
   peers,
   portfolioCurrentValue,
   seed,
@@ -249,7 +253,20 @@ export default function DeepDiveClient({
               </section>
 
               <section>
-                <h2 className="font-semibold text-foreground mb-4">Analysis</h2>
+                <div className="flex items-center gap-3 mb-4">
+                  <h2 className="font-semibold text-foreground">Analysis</h2>
+                  {verdict && (
+                    <span
+                      className={`inline-flex items-center px-2 py-0.5 rounded-md text-xs font-semibold ${
+                        verdict === "BUY" ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                        : verdict === "SELL" ? "bg-red-50 text-red-700 border border-red-200"
+                        : "bg-amber-50 text-amber-700 border border-amber-200"
+                      }`}
+                    >
+                      {verdict}{confidence ? ` · ${confidence}` : ""}
+                    </span>
+                  )}
+                </div>
                 <div className="bg-card border border-border rounded-xl p-5 h-full">
                   <p className="text-sm text-foreground/80 leading-relaxed">
                     {analysis ?? "No analysis generated yet."}

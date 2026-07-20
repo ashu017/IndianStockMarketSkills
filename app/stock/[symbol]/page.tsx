@@ -55,6 +55,8 @@ export default async function Page({
   let fundamentals: FundamentalItem[] = [];
   let peers: Peer[] = [];
   let analysis: string | null = null;
+  let verdict: string | null = null;
+  let confidence: string | null = null;
 
   if (row.isin) {
     const [{ core, extra }, peerRows, analysisRow] = await Promise.all([
@@ -85,6 +87,8 @@ export default async function Page({
       salesGrowth: p.sales_growth ?? 0,
     }));
     analysis = analysisRow?.narrative ?? null;
+    verdict = analysisRow?.verdict ?? null;
+    confidence = analysisRow?.confidence ?? null;
   }
 
   return (
@@ -94,6 +98,8 @@ export default async function Page({
         holding={holding}
         fundamentals={fundamentals}
         analysis={analysis}
+        verdict={verdict}
+        confidence={confidence}
         peers={peers}
         portfolioCurrentValue={totalRupees}
         seed={seedFor(holding.symbol)}
