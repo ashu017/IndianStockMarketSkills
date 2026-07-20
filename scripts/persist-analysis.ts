@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { writeAnalysis, type AnalysisPayload } from "@/lib/ingest/analysis-writer";
 
@@ -19,6 +19,10 @@ function main(): void {
   db.pragma("journal_mode = WAL");
   db.pragma("busy_timeout = 5000");
   db.pragma("foreign_keys = ON");
+  // Ensure the schema exists so this works on a fresh DB, not just an
+  // already-migrated dashboard DB. schema.sql is all CREATE TABLE IF NOT EXISTS,
+  // so applying it is idempotent.
+  db.exec(readFileSync("db/schema.sql", "utf8"));
   try {
     writeAnalysis(db, payload);
   } finally {
