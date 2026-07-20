@@ -6,9 +6,7 @@ tools:
   - Bash
   - Skill
   - mcp__screener__get_fundamentals
-  - mcp__screener__get_financials
   - mcp__screener__get_peers
-  - mcp__screener__get_chart
   - mcp__kite__get_holdings
 ---
 
@@ -24,21 +22,24 @@ You MUST NOT place, modify, or cancel any order.
 
 ## Procedure
 
-1. **Gather** (call these screener tools; they take the symbol):
-   - `get_fundamentals` → ratios, pros/cons, sector
-   - `get_peers` → peer table + median
-   - `get_financials` → multi-year P&L / balance sheet / cash flow
-   - `get_chart` with `metric: "Price"` → for valuation-vs-history context
+1. **Gather** (call ONLY these two screener tools; they take the symbol):
+   - `get_fundamentals` → ratios, pros/cons, sector (the primary input)
+   - `get_peers` → peer table + median (for relative valuation)
+   Do NOT call get_financials or get_chart — they are token-heavy and not needed for
+   the verdict. Multi-year price history is rendered separately on the dashboard via
+   the /api/chart route; the fundamentals ratio card already includes growth figures.
    If a fetch fails or the symbol is unknown, set fetch_status "failed" and still
    report; do not fabricate numbers.
 2. **Position context:** if an isin/holding is provided or found via holdings, note avg
    cost, current P&L, and portfolio weight.
 3. **Grade** each ratio Good/Fair/Weak using SECTOR-AWARE judgement: banks/NBFCs on
    NIM/GNPA/CASA/ROE (not debt/equity); IT on margins/growth; cyclicals on the cycle.
-4. **Synthesize** a BUY/SELL/HOLD verdict + confidence (Low/Medium/High) weighing four
-   axes, each cited with numbers: Quality (graded fundamentals + trend direction),
-   Valuation (vs peers AND vs own history), Position (your cost/P&L/weight), and the
-   overall risk picture.
+4. **Synthesize** a BUY/SELL/HOLD verdict + confidence (Low/Medium/High) weighing three
+   axes, each cited with numbers: Quality (graded fundamentals + the growth figures and
+   pros/cons from get_fundamentals), Valuation (vs peers from get_peers), and Position
+   (your cost/P&L/weight), plus the overall risk picture. Base the call only on the
+   fundamentals + peers you fetched and the position context you were given — do not
+   claim multi-year trend or price-history detail you did not fetch.
 5. **Persist:** build the AnalysisPayload JSON (isin required; parse Screener display
    strings to numbers — strip ₹/%/×/commas, market cap crore→paise ×1e9), then run:
    ```bash
@@ -47,6 +48,13 @@ You MUST NOT place, modify, or cancel any order.
    Confirm it prints `{"status":"ok",...}`.
 6. **Report** in chat: the scorecard, the verdict + confidence + per-axis reasoning, and
    the disclaimer.
+
+## Batch runs (TTL skip)
+Before fanning out across all holdings, the caller should run
+`PORTFOLIO_DB_PATH=./data/portfolio.db npx tsx scripts/analysis-status.ts` — it returns
+`{today, fresh, stale}`. Only dispatch the analyst for the `stale` ISINs (those NOT
+already analyzed successfully today); skip the `fresh` ones. Use `FORCE=1` to re-analyze
+everything. This makes same-day re-runs near-instant and auto-retries prior failed fetches.
 
 ## Notes
 - ISIN is the DB key. In batch mode the caller passes it. If analyzing a non-held stock
