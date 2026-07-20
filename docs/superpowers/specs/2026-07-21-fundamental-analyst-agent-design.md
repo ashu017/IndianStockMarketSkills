@@ -29,8 +29,15 @@ script; it never writes SQLite directly). It has **no Kite order tools**.
 ### Non-goals (deferred / out of scope)
 - Live trading / order placement (the agent has no Kite write tools).
 - Real-time intraday fundamentals (Screener updates daily at best).
-- Replacing the `portfolio-agent`'s no-advice stance — this agent OWNS the advice
-  behavior explicitly; the portfolio-agent is unchanged.
+
+### Shared recommendation policy (applies to BOTH agents)
+This is a **local-only, single-user** personal tool, so both the `fundamental-analyst`
+and the `portfolio-agent` follow ONE consistent policy: **recommendations (including
+buy/sell/hold) are permitted**, always with reasoning, the underlying numbers, and an
+"educational, not SEBI-registered advice, at your own risk" disclaimer. This **replaces**
+the `portfolio-agent`'s current rule #4 ("state observations, not recommendations"). The
+implementation updates `.claude/agents/portfolio-agent.md` so the two agents no longer
+hold contradictory stances. Order execution remains prohibited for both.
 
 ## 3. Architecture
 
@@ -134,10 +141,15 @@ persist keyed by a symbol-derived fallback id and still return the chat verdict.
 - **Agent behavior** — live end-to-end on 2–3 real stocks (TCS, a bank, a loss-maker);
   verify persisted rows + verdict are sane and the dashboard deep-dive renders them.
 
-## 9. Guardrails & disclaimers
+## 9. Guardrails & disclaimers (shared policy)
 
-- Verdict is educational, explicitly **not** SEBI-registered investment advice; disclaimer
-  stored with and surfaced next to every call.
+Both agents share the recommendation policy from §2. Recommendations are allowed because
+this is a local, single-user tool; the guardrails keep them honest and auditable:
+
+- Verdicts/recommendations are educational, explicitly **not** SEBI-registered investment
+  advice; the disclaimer is stored with and surfaced next to every call.
 - Every verdict is explainable: per-axis reasoning + the underlying numbers are persisted.
 - Auditable: `model_version` + `prompt_version` stamped on each `analysis` row.
-- No trade execution — agent cannot place/modify/cancel orders.
+- **No trade execution** — neither agent can place/modify/cancel orders (hard boundary).
+- **Implementation task:** update `.claude/agents/portfolio-agent.md` rule #4 to the shared
+  policy (recommendations-with-guardrails), so both agents are consistent.
