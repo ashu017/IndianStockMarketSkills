@@ -1,19 +1,11 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import {
-  AreaChart,
-  Area,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
-  CartesianGrid,
-} from "recharts";
 import type { Holding, FundamentalItem, Peer } from "@/lib/types";
 import { fmtINR, fmtINRSigned, fmtPct, fmtNum, gainTextClass } from "./utils";
+import StockCharts from "./StockCharts";
 
 interface Props {
   holding: Holding;
@@ -24,31 +16,6 @@ interface Props {
   peers: Peer[];
   portfolioCurrentValue: number;
   seed: number;
-}
-
-// Deterministic pseudo-random (seeded) so server and client renders match — no Math.random().
-function seededHistory(ltp: number, avgPrice: number, seed: number, days = 180) {
-  const data: { date: string; price: number; avg: number }[] = [];
-  const start = new Date("2026-01-06");
-  let s = seed % 2147483647;
-  if (s <= 0) s += 2147483646;
-  const rand = () => (s = (s * 16807) % 2147483647) / 2147483647;
-  let price = avgPrice * (0.92 + rand() * 0.06);
-  const drift = (ltp - price) / days;
-  for (let i = 0; i < days; i++) {
-    const d = new Date(start);
-    d.setDate(d.getDate() + i);
-    const dow = d.getDay();
-    if (dow === 0 || dow === 6) continue;
-    price += drift + (rand() - 0.48) * price * 0.012;
-    price = Math.max(price, avgPrice * 0.5);
-    data.push({
-      date: d.toLocaleDateString("en-IN", { day: "numeric", month: "short" }),
-      price: Math.round(price * 100) / 100,
-      avg: avgPrice,
-    });
-  }
-  return data;
 }
 
 function GradePill({ grade }: { grade: "Good" | "Fair" | "Weak" }) {
@@ -94,14 +61,8 @@ export default function DeepDiveClient({
   portfolioCurrentValue,
   seed,
 }: Props) {
-  const priceHistory = useMemo(
-    () => seededHistory(holding.ltp, holding.avgPrice, seed),
-    [holding.ltp, holding.avgPrice, seed],
-  );
-
   const daySign = holding.dayChangePct >= 0 ? "+" : "−";
   const isGain = holding.pnl >= 0;
-  const chartColor = isGain ? "#16A34A" : "#DC2626";
   const hasDetail = fundamentals.length > 0 || peers.length > 0 || !!analysis;
 
   return (
@@ -139,74 +100,8 @@ export default function DeepDiveClient({
 
         <div className="border-t border-border mb-8" />
 
-        {/* Price chart */}
-        <section className="mb-8">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold text-foreground">Price History</h2>
-            <span className="text-xs text-muted-foreground">Jan – Jul 2026 · simulated</span>
-          </div>
-          <div className="bg-card border border-border rounded-xl px-2 py-5">
-            <ResponsiveContainer width="100%" height={220}>
-              <AreaChart data={priceHistory} margin={{ top: 4, right: 16, left: 0, bottom: 0 }}>
-                <defs>
-                  <linearGradient id={`grad-${holding.symbol}`} x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor={chartColor} stopOpacity={0.18} />
-                    <stop offset="95%" stopColor={chartColor} stopOpacity={0.01} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="rgba(15,23,42,0.06)" vertical={false} />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 11, fill: "#64748B" }}
-                  tickLine={false}
-                  axisLine={false}
-                  interval={Math.floor(priceHistory.length / 6)}
-                />
-                <YAxis
-                  tick={{ fontSize: 11, fill: "#64748B" }}
-                  tickLine={false}
-                  axisLine={false}
-                  width={70}
-                  tickFormatter={(v) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(v)}`}
-                  domain={["auto", "auto"]}
-                />
-                <Tooltip
-                  content={({ active, payload }: any) => {
-                    if (!active || !payload?.length) return null;
-                    const p = payload[0].payload;
-                    return (
-                      <div className="bg-card border border-border rounded-lg px-3 py-2 shadow-lg text-sm">
-                        <p className="text-muted-foreground text-xs mb-1">{p.date}</p>
-                        <p className="font-semibold text-foreground num">{fmtINR(p.price, 2)}</p>
-                        <p className="text-xs text-muted-foreground num">Avg cost {fmtINR(p.avg, 2)}</p>
-                      </div>
-                    );
-                  }}
-                />
-                <Area type="monotone" dataKey="avg" stroke="#94A3B8" strokeWidth={1} strokeDasharray="4 3" fill="none" dot={false} activeDot={false} />
-                <Area
-                  type="monotone"
-                  dataKey="price"
-                  stroke={chartColor}
-                  strokeWidth={2}
-                  fill={`url(#grad-${holding.symbol})`}
-                  dot={false}
-                  activeDot={{ r: 4, fill: chartColor, stroke: "#fff", strokeWidth: 2 }}
-                />
-              </AreaChart>
-            </ResponsiveContainer>
-            <div className="flex items-center gap-6 justify-end px-4 pt-2">
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 border-t-2 border-dashed border-slate-400" />
-                <span className="text-xs text-muted-foreground">Avg cost {fmtINR(holding.avgPrice, 2)}</span>
-              </div>
-              <div className="flex items-center gap-1.5">
-                <span className="w-5 border-t-2" style={{ borderColor: chartColor }} />
-                <span className="text-xs text-muted-foreground">LTP {fmtINR(holding.ltp, 2)}</span>
-              </div>
-            </div>
-          </div>
-        </section>
+        {/* Real charts (price / quarterly sales / EPS) from Screener via /api/chart */}
+        <StockCharts symbol={holding.symbol} avgPrice={holding.avgPrice} isGain={isGain} />
 
         {/* Your Position */}
         <section className="mb-8">
