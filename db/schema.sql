@@ -93,6 +93,8 @@ CREATE TABLE IF NOT EXISTS kite_session (
 CREATE TABLE IF NOT EXISTS analysis (
   isin           TEXT NOT NULL,
   narrative      TEXT,
+  verdict        TEXT,                       -- 'BUY' | 'SELL' | 'HOLD'
+  confidence     TEXT,                       -- 'Low' | 'Medium' | 'High'
   generated_at   TEXT,                       -- ISO-8601 UTC
   model_version  TEXT,
   prompt_version TEXT,
