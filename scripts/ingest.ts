@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { buildPayload } from "@/lib/ingest/build-payload";
 import { writeSnapshot, type SnapshotPayload } from "@/lib/ingest/writer";
@@ -10,6 +10,7 @@ import {
 } from "@/lib/ingest/kite-client";
 import { autoLogin, autoLoginEnabled } from "@/lib/ingest/kite-totp-login";
 import type { RawKiteHolding } from "@/lib/ingest/kite-normalize";
+import { paiseToRupees, priceToRupees } from "@/lib/money";
 
 /**
  * Ingestion CLI (spawned by POST /api/refresh, or run directly).
@@ -70,6 +71,42 @@ async function resolvePayload(
   return { payload: buildPayload(userId, raw), source: "kite" };
 }
 
+/**
+ * Write the human-readable data/holdings.json alongside the SQLite snapshot.
+ * Same shape as scripts/ingest-from-mcp.ts so downstream consumers (Telegram
+ * cron, generate-insights skill, dashboard fallbacks) don't care which path
+ * produced it.
+ */
+function writeHoldingsJson(
+  outPath: string,
+  payload: Omit<SnapshotPayload, "snapshotDate">,
+): void {
+  mkdirSync(dirname(outPath), { recursive: true });
+  const holdingsJson = {
+    fetched_at: new Date().toISOString(),
+    totals: {
+      current_value: paiseToRupees(payload.totals.current_value),
+      invested: paiseToRupees(payload.totals.invested),
+      total_pnl: paiseToRupees(payload.totals.total_pnl),
+      day_pnl: paiseToRupees(payload.totals.day_pnl),
+      holdings_count: payload.totals.holdings_count,
+      winners: payload.totals.winners,
+      losers: payload.totals.losers,
+    },
+    holdings: payload.holdings.map((h, i) => ({
+      symbol: h.symbol,
+      exchange: h.exchange,
+      isin: payload.meta[i]?.isin ?? null,
+      company_name: payload.meta[i]?.company_name ?? null,
+      qty: h.qty,
+      avg_price: priceToRupees(h.avg_price),
+      ltp: paiseToRupees(h.ltp),
+      close_price: paiseToRupees(h.close_price),
+    })),
+  };
+  writeFileSync(outPath, JSON.stringify(holdingsJson, null, 2));
+}
+
 async function main(): Promise<void> {
   loadEnv();
   const userId = process.env.PORTFOLIO_USER_ID ?? "local";
@@ -90,6 +127,12 @@ async function main(): Promise<void> {
     }
     const payload: SnapshotPayload = { ...resolved.payload, snapshotDate };
     writeSnapshot(db, payload);
+    // Skip holdings.json when the caller supplied INGEST_PAYLOAD — that path
+    // (ingest-from-mcp.ts) writes the file itself before invoking us.
+    if (resolved.source !== "payload") {
+      const holdingsJsonPath = process.env.HOLDINGS_JSON_PATH ?? "./data/holdings.json";
+      writeHoldingsJson(holdingsJsonPath, resolved.payload);
+    }
     process.stdout.write(
       JSON.stringify({
         status: "ok",

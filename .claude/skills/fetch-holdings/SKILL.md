@@ -1,43 +1,101 @@
 ---
 name: fetch-holdings
-description: Fetch the user's Zerodha Kite holdings via MCP, normalize them, and write data/holdings.json. Use whenever the user asks to refresh, view, or analyze their portfolio.
+description: Fetch the user's Zerodha Kite holdings via the Kite Connect REST API (using a cached daily access_token) and write data/holdings.json plus a SQLite snapshot. Use whenever the user asks to refresh, view, or analyze their portfolio.
 ---
 
 # fetch-holdings
 
-Pull the user's current holdings from the Kite MCP server, transform them with the project normalizer, and write the canonical `data/holdings.json` that all downstream skills read.
+Pull the user's current holdings via the Kite Connect REST API (`api.kite.trade`),
+using the daily `access_token` cached in the SQLite `kite_session` table. Produce:
+
+- `data/holdings.json` — human-readable snapshot used by `generate-insights` and
+  the Telegram digest
+- one row in the SQLite `holdings_snapshot` table (per IST day) — used by the
+  Next.js dashboard and `fundamental-analyst` peer-join queries
+
+This flow is **fully headless** — no MCP session, no browser click — as long as
+today's `access_token` is still valid (Zerodha tokens expire at 06:00 IST).
 
 ## When to use
 
 - The user runs `/portfolio` (orchestrated by `portfolio-agent`)
 - The user runs `/portfolio refresh`
+- The `portfolio-telegram` cron fires
 - Any other skill needs fresh holdings data
 
 ## Steps
 
-1. Call `mcp__kite__get_holdings` (no parameters).
-2. If the tool returns a "Please log in" error, call `mcp__kite__login`, return the login URL to the user as a clickable markdown link, and STOP. Do not proceed.
-3. If the call returns an array (possibly empty), continue.
-4. Save the raw MCP JSON response to `data/_raw_holdings.json`, then from the project root (`/Users/ashunsah/Desktop/Stocks`) run:
+Working directory: `/home/ashunsah/workplace/IndianStockMarketSkills`
+
+1. Ensure `node_modules` exists and the DB is migrated. Cheap idempotent check:
 
    ```bash
-   .venv/bin/python -c "
-   import json
-   from datetime import datetime, timezone
-   from dashboard.fetch_holdings import normalize_holdings, atomic_write_json
-   raw = json.load(open('data/_raw_holdings.json'))
-   now = datetime.now(timezone.utc).isoformat()
-   atomic_write_json('data/holdings.json', normalize_holdings(raw, now=now))
-   print('wrote data/holdings.json with', len(raw), 'holdings')
-   "
-   rm data/_raw_holdings.json
+   cd /home/ashunsah/workplace/IndianStockMarketSkills
+   [ -d node_modules ] || npm install
+   [ -f data/portfolio.db ] || PORTFOLIO_DB_PATH=./data/portfolio.db npx tsx scripts/migrate.ts
+   mkdir -p data
    ```
 
-5. Verify `data/holdings.json` exists and is valid JSON.
-6. Report: "Fetched N holdings, total value ₹X, day P&L ₹Y" (read from the summary).
+2. Run the ingest script. It reads `.env` for `KITE_API_KEY` / `KITE_API_SECRET`,
+   loads the cached `access_token` from SQLite, calls `api.kite.trade/portfolio/holdings`,
+   writes `data/holdings.json`, and upserts today's snapshot row:
+
+   ```bash
+   cd /home/ashunsah/workplace/IndianStockMarketSkills
+   PORTFOLIO_DB_PATH=./data/portfolio.db PORTFOLIO_USER_ID=local \
+     npx tsx scripts/ingest.ts
+   ```
+
+   Exits with one of two JSON lines on stdout:
+
+   - `{"status":"ok","source":"kite","snapshotDate":"YYYY-MM-DD","holdings":N}` — success
+   - `{"status":"login_required"}` — no valid cached token (token expired at 06:00 IST
+     or the user has never logged in on this box)
+   - `{"status":"error","message":"..."}` — anything else (network, API rejection, etc.)
+
+3. On `login_required`, HALT. Do NOT proceed and do NOT fabricate holdings. Return
+   this instruction to the caller (the cron converts it into a Telegram WARN, the
+   interactive user sees a login link):
+
+   > Kite session expired — visit `http://127.0.0.1:3210/api/kite/login` in a browser
+   > (SSH tunnel if remote) and complete Zerodha login + TOTP. Then re-run.
+
+   The Next.js dashboard exposes `/api/kite/login` (redirects to Zerodha) and
+   `/api/kite/callback` (exchanges the request_token and persists the new
+   access_token). Start the dashboard first if it isn't running:
+
+   ```bash
+   cd /home/ashunsah/workplace/IndianStockMarketSkills
+   PORTFOLIO_DB_PATH=./data/portfolio.db PORTFOLIO_USER_ID=local \
+     npm run dev -- --port 3210 --hostname 127.0.0.1
+   ```
+
+4. On `status: ok`, verify `data/holdings.json` exists and parses. Report a
+   one-line summary read from the file's `totals` block:
+   `"Fetched N holdings, total value ₹X, day P&L ₹Y"`.
 
 ## Failure modes
 
-- **Auth required:** halt with login URL.
-- **MCP timeout:** retry once after 2 seconds. On second failure, surface the error and leave any existing `data/holdings.json` untouched.
-- **Empty holdings:** still write a valid file (empty array, zeroed summary). Report "no holdings found" and continue.
+- **`login_required`:** halt with the login URL. Leave any existing
+  `data/holdings.json` untouched. Once per day (before ~06:00 IST expiry) is the
+  worst case — the token is good for the rest of the day after one browser click.
+- **API 4xx from Kite** (`InputException`, expired token mid-day, revoked):
+  `ingest.ts` prints `status: error`. Surface the error and stop; do NOT retry
+  blindly — some 4xx responses invalidate the token and only a fresh login helps.
+- **Network / timeout:** retry once after 2 seconds. On second failure, surface
+  the error and leave any existing `data/holdings.json` untouched.
+- **Empty holdings:** `ingest.ts` still writes a valid `data/holdings.json` (empty
+  array, zeroed totals). Report "no holdings found" and continue.
+- **`npm install` needed but blocked (no network / stale lockfile):** report the
+  failure and stop; do not attempt a workaround.
+
+## Notes on the auth model
+
+- The daily `access_token` is stored in the `kite_session` SQLite table, one row
+  per `PORTFOLIO_USER_ID`. `expires_at` is pinned to the next 06:00 IST boundary
+  (SEBI regulation).
+- This skill does NOT use the Kite MCP (`mcp__kite__*` tools). The MCP requires
+  an interactive OAuth session per SSE connection, which cannot be reused by a
+  headless cron. The REST API + cached token pattern is what makes the cron work.
+- The `portfolio-telegram` cron detects `login_required` and posts a WARN to
+  Telegram (dedup'd, so it doesn't spam). One click on the login URL fixes it.
