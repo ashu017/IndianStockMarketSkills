@@ -8,8 +8,28 @@ import {
   avgVolume,
   goldenCross,
   isDonchianBreakout,
+  intradayVolumeFraction,
+  isDuringMarketHours,
   type OHLC,
 } from "@/lib/indicators";
+
+// Helper: build a UTC Date at a given IST time-of-day. IST is UTC+5:30.
+function istDate(h: number, m: number): Date {
+  // Pick an arbitrary weekday; the day-of-week doesn't matter for these tests.
+  // 2026-07-27 was a Monday. Convert IST hh:mm to UTC by subtracting 5h30m.
+  const istMinutes = h * 60 + m;
+  const utcMinutes = istMinutes - 5 * 60 - 30;
+  const day = 27;
+  let addDay = 0;
+  let mins = utcMinutes;
+  if (mins < 0) {
+    mins += 24 * 60;
+    addDay = -1;
+  }
+  const hh = Math.floor(mins / 60);
+  const mm = mins % 60;
+  return new Date(Date.UTC(2026, 6, day + addDay, hh, mm, 0));
+}
 
 describe("sma", () => {
   it("returns null when series shorter than n", () => {
@@ -112,5 +132,51 @@ describe("isDonchianBreakout", () => {
   it("false when today's close equals the prior high (not strictly greater)", () => {
     const closes = [...Array(20).fill(100), 100];
     expect(isDonchianBreakout(closes, 20)).toBe(false);
+  });
+});
+
+describe("intradayVolumeFraction", () => {
+  it("returns 0 before market open (09:15 IST)", () => {
+    expect(intradayVolumeFraction(istDate(9, 0))).toBe(0);
+    expect(intradayVolumeFraction(istDate(9, 15))).toBe(0);
+  });
+  it("returns 1 after market close (15:30 IST)", () => {
+    expect(intradayVolumeFraction(istDate(15, 30))).toBe(1);
+    expect(intradayVolumeFraction(istDate(18, 0))).toBe(1);
+  });
+  it("returns anchor values on the dot", () => {
+    // 10:00 IST → 0.20
+    expect(intradayVolumeFraction(istDate(10, 0))).toBeCloseTo(0.20, 3);
+    // 12:00 IST → 0.42
+    expect(intradayVolumeFraction(istDate(12, 0))).toBeCloseTo(0.42, 3);
+    // 15:00 IST → 0.74
+    expect(intradayVolumeFraction(istDate(15, 0))).toBeCloseTo(0.74, 3);
+  });
+  it("interpolates linearly between anchors", () => {
+    // 11:30 IST is midway between 11:00 (0.33) and 12:00 (0.42) → ~0.375
+    expect(intradayVolumeFraction(istDate(11, 30))).toBeCloseTo(0.375, 3);
+  });
+  it("is monotonically non-decreasing across the day", () => {
+    let prev = -0.001;
+    for (let m = 9 * 60 + 15; m <= 15 * 60 + 30; m += 5) {
+      const h = Math.floor(m / 60);
+      const mm = m % 60;
+      const f = intradayVolumeFraction(istDate(h, mm));
+      expect(f).toBeGreaterThanOrEqual(prev);
+      prev = f;
+    }
+  });
+});
+
+describe("isDuringMarketHours", () => {
+  it("false outside 09:15–15:30 IST", () => {
+    expect(isDuringMarketHours(istDate(8, 0))).toBe(false);
+    expect(isDuringMarketHours(istDate(16, 0))).toBe(false);
+    expect(isDuringMarketHours(istDate(3, 0))).toBe(false);
+  });
+  it("true within market hours (inclusive of both bounds)", () => {
+    expect(isDuringMarketHours(istDate(9, 15))).toBe(true);
+    expect(isDuringMarketHours(istDate(11, 0))).toBe(true);
+    expect(isDuringMarketHours(istDate(15, 30))).toBe(true);
   });
 });

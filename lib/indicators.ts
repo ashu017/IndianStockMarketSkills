@@ -147,3 +147,65 @@ export function isDonchianBreakout(closes: number[], n = 20): boolean | null {
   for (const c of prior) if (c > hi) hi = c;
   return closes[closes.length - 1] > hi;
 }
+
+/**
+ * Typical intraday cumulative-volume curve for NSE cash-equity segment.
+ * The market runs 09:15–15:30 IST (375 minutes). Volume is U-shaped: heavy at
+ * the open, thin midday, heavy into the close. Numbers below are rough anchors
+ * distilled from published Indian-equity intraday studies + Zerodha aggregate
+ * charts — good enough to normalize day-volume-so-far to a full-day equivalent.
+ *
+ * Returns the fraction (0.0–1.0) of an average day's volume expected to have
+ * accumulated by a given IST time-of-day. Anchored points; linear-interpolated
+ * between them. Callers pass the current Date (UTC); we convert to IST here.
+ *
+ * Before 09:15 or after 15:30, returns 0 or 1 respectively.
+ */
+const IST_INTRADAY_ANCHORS: { hhmm: number; frac: number }[] = [
+  { hhmm: 9 * 60 + 15, frac: 0.00 },   // market open
+  { hhmm: 10 * 60 + 0,  frac: 0.20 },  // ~20% of day is done in the first 45 min
+  { hhmm: 11 * 60 + 0,  frac: 0.33 },
+  { hhmm: 12 * 60 + 0,  frac: 0.42 },
+  { hhmm: 13 * 60 + 0,  frac: 0.50 },
+  { hhmm: 14 * 60 + 0,  frac: 0.60 },
+  { hhmm: 15 * 60 + 0,  frac: 0.74 },
+  { hhmm: 15 * 60 + 15, frac: 0.88 },  // "auction-preparation" push
+  { hhmm: 15 * 60 + 30, frac: 1.00 },  // close
+];
+
+/** Get IST minutes-since-midnight from a UTC Date. */
+function istMinutesFromUtc(d: Date): number {
+  const utcMs = d.getTime();
+  const istMs = utcMs + 5.5 * 3600_000;
+  const ist = new Date(istMs);
+  return ist.getUTCHours() * 60 + ist.getUTCMinutes();
+}
+
+export function intradayVolumeFraction(now: Date = new Date()): number {
+  const t = istMinutesFromUtc(now);
+  if (t <= IST_INTRADAY_ANCHORS[0].hhmm) return 0;
+  if (t >= IST_INTRADAY_ANCHORS[IST_INTRADAY_ANCHORS.length - 1].hhmm) return 1;
+  for (let i = 1; i < IST_INTRADAY_ANCHORS.length; i++) {
+    const a = IST_INTRADAY_ANCHORS[i - 1];
+    const b = IST_INTRADAY_ANCHORS[i];
+    if (t >= a.hhmm && t <= b.hhmm) {
+      const span = b.hhmm - a.hhmm;
+      if (span === 0) return b.frac;
+      const w = (t - a.hhmm) / span;
+      return a.frac + w * (b.frac - a.frac);
+    }
+  }
+  return 1;
+}
+
+/**
+ * True iff the current IST time is within market hours (09:15–15:30 IST).
+ * Used to decide whether to apply intraday extrapolation to the volume filter.
+ * Outside market hours the day_volume in ohlc_intraday is the full session's
+ * volume already, so no scaling is needed.
+ */
+export function isDuringMarketHours(now: Date = new Date()): boolean {
+  const t = istMinutesFromUtc(now);
+  return t >= 9 * 60 + 15 && t <= 15 * 60 + 30;
+}
+

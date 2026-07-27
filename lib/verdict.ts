@@ -7,6 +7,8 @@ import {
   avgVolume,
   goldenCross,
   isDonchianBreakout,
+  intradayVolumeFraction,
+  isDuringMarketHours,
   type OHLC,
 } from "./indicators";
 
@@ -324,9 +326,50 @@ export function evaluate(input: EvaluateInput): StockVerdict {
     const sma200 = sma(closes, 200);
     const gc = goldenCross(closes);
     const breakout = isDonchianBreakout(closes, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
-    const avgVol20 = avgVolume(volumes, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
+    // Volume filter — time-aware.
+    //
+    // The naive ratio (lastVol / avg20d) is broken during market hours: at 10 AM
+    // only ~20% of a day's volume has accumulated, so a "1.5×" threshold would
+    // require lastVol to be 7.5× a normal day's total in the first 45 min —
+    // basically impossible.
+    //
+    // Fix: if the last bar is TODAY's synthetic overlay from ohlc_intraday AND
+    // we're within market hours, extrapolate lastVol to full-day equivalent
+    // using a typical NSE intraday cumulative-volume curve, then compare.
+    // Outside market hours (i.e. after 15:30 IST or on non-trading days) the
+    // day_volume in ohlc_intraday is already the full session, so no scaling.
+    //
+    // The `avgVolume(volumes, 20)` window includes today's synthetic bar. That
+    // slightly deflates the reference average when today's fractional volume
+    // is small — offset by using the PRIOR 20 bars, excluding today.
+    const priorVolumes = volumes.length > 1 ? volumes.slice(0, -1) : volumes;
+    const avgVol20 = avgVolume(priorVolumes, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
     const lastVol = volumes[volumes.length - 1] ?? 0;
-    const volRatio = avgVol20 && avgVol20 > 0 ? lastVol / avgVol20 : null;
+    const nowIst = new Date();
+    const istTodayStr = new Date(nowIst.getTime() + 5.5 * 3600_000).toISOString().slice(0, 10);
+    const lastBarIsToday = ohlc[ohlc.length - 1]?.trade_date === istTodayStr;
+    const marketOpen = isDuringMarketHours(nowIst);
+    const shouldExtrapolate = lastBarIsToday && marketOpen;
+    // Guard: skip the volume filter in the first 45 min of trading (09:15–10:00 IST).
+    // Opening auction + first-minutes noise makes the extrapolation nonsense.
+    const rawFrac = intradayVolumeFraction(nowIst);
+    const tooEarly = shouldExtrapolate && rawFrac < 0.20; // 0.20 corresponds to ~10 AM anchor
+    // Extrapolation fraction, clamped to a floor to prevent runaway ratios.
+    const frac = shouldExtrapolate ? Math.max(0.10, Math.min(1.0, rawFrac)) : 1.0;
+    const extrapolatedVol = shouldExtrapolate ? lastVol / frac : lastVol;
+    let volRatio: number | null = null;
+    let volNote: string | undefined;
+    if (tooEarly) {
+      volNote = `too early (before 10:00 IST); skipping volume check`;
+    } else if (avgVol20 !== null && avgVol20 > 0) {
+      // Cap at 5× — genuine gap-and-go still fires, but a tiny opening tick
+      // extrapolating to 20× can't slip through.
+      const raw = extrapolatedVol / avgVol20;
+      volRatio = Math.min(raw, 5.0);
+      if (shouldExtrapolate) {
+        volNote = `intraday-extrapolated: raw ${lastVol.toLocaleString()} ÷ ${frac.toFixed(2)} = ${Math.round(extrapolatedVol).toLocaleString()} full-day equiv`;
+      }
+    }
     const mom = volAdjMomentum(closes, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP);
     const atr14 = atr(bars, TECHNICAL_THRESHOLDS.ATR_PERIOD);
     const dLow20 = donchianLow(lows, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
@@ -358,14 +401,23 @@ export function evaluate(input: EvaluateInput): StockVerdict {
       ok: breakout === true,
       note: breakout === null ? `need ${TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK + 1} bars` : undefined,
     });
-    // T4: Volume surge
+    // T4: Volume surge (time-aware during market hours)
+    // Behavior:
+    //   - Before 10:00 IST: check is deferred (not a fail, not a pass; effectively
+    //     the gating pipeline drops the stock until the next scan when data is more
+    //     mature). We report ok=false with the "too early" note.
+    //   - Market hours (10:00–15:30 IST) with today's synthetic bar: extrapolate
+    //     day_volume-so-far to full-day equivalent via the intraday curve.
+    //   - Outside market hours (EOD bar in place): use raw ratio (no extrapolation).
     technical.push({
       filter: `Volume ≥ ${TECHNICAL_THRESHOLDS.VOL_SURGE_MIN}× 20d avg`,
       value: volRatio,
-      displayValue: volRatio !== null ? `${volRatio.toFixed(2)}× (today ${lastVol.toLocaleString()} vs avg ${avgVol20?.toFixed(0)})` : "—",
+      displayValue: volRatio !== null
+        ? `${volRatio.toFixed(2)}× (today ${lastVol.toLocaleString()} vs 20d avg ${avgVol20?.toFixed(0)})`
+        : tooEarly ? "deferred" : "—",
       threshold: `≥ ${TECHNICAL_THRESHOLDS.VOL_SURGE_MIN}×`,
       ok: volRatio !== null && volRatio >= TECHNICAL_THRESHOLDS.VOL_SURGE_MIN,
-      note: avgVol20 === null ? "need 20 bars for avg" : undefined,
+      note: volNote ?? (avgVol20 === null ? "need 20 bars for avg" : undefined),
     });
     // T5: Momentum (informational, not gating — but shown so user sees ranking context)
     technical.push({
