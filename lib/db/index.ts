@@ -138,3 +138,38 @@ export async function getStockMeta(
       .get(symbol, exchange) as StockMetaRow | undefined) ?? null
   );
 }
+
+/**
+ * Look up a stock in index_universe (searches every membership; prefers Nifty 200,
+ * then Nifty 100, then AD-HOC single-fetch entries, then anything else).
+ */
+export interface UniverseStock {
+  symbol: string;
+  exchange: string;
+  isin: string;
+  tradingsymbol: string;
+  instrument_token: number;
+  company: string;
+  sector: string;
+}
+export async function getUniverseStock(symbol: string): Promise<UniverseStock | null> {
+  const priorities = ["NIFTY 200", "NIFTY 100", "NIFTY 500", "AD-HOC"];
+  const db = getDb();
+  for (const idx of priorities) {
+    const r = db
+      .prepare(
+        `SELECT symbol, exchange, isin, tradingsymbol, instrument_token, company, sector
+         FROM index_universe WHERE index_name=? AND symbol=? LIMIT 1`,
+      )
+      .get(idx, symbol) as UniverseStock | undefined;
+    if (r) return r;
+  }
+  return (
+    (db
+      .prepare(
+        `SELECT symbol, exchange, isin, tradingsymbol, instrument_token, company, sector
+         FROM index_universe WHERE symbol=? LIMIT 1`,
+      )
+      .get(symbol) as UniverseStock | undefined) ?? null
+  );
+}

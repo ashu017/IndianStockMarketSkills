@@ -111,3 +111,127 @@ FROM (
   FROM holding_snapshots hs
 )
 WHERE rn = 1;
+
+-- Index membership: which stocks belong to which NSE index. A stock can be in
+-- multiple indices (NIFTY 100 ⊂ NIFTY 200 ⊂ NIFTY 500), so composite PK includes
+-- index_name. `sector` drives the financials-exempt debt/equity rule in the
+-- quality gate. Rebuild quarterly when NSE rebalances.
+CREATE TABLE IF NOT EXISTS index_universe (
+  index_name         TEXT NOT NULL,             -- 'NIFTY 100' | 'NIFTY 200' | 'NIFTY 500' | 'NIFTY MIDCAP 150' | ...
+  symbol             TEXT NOT NULL,
+  exchange           TEXT NOT NULL CHECK (exchange IN ('NSE','BSE')),
+  isin               TEXT NOT NULL,
+  tradingsymbol      TEXT NOT NULL,
+  instrument_token   INTEGER NOT NULL,
+  company            TEXT,
+  sector             TEXT,
+  as_of_date         TEXT NOT NULL,
+  PRIMARY KEY (index_name, symbol, exchange)
+);
+CREATE INDEX IF NOT EXISTS idx_index_universe_symbol ON index_universe(symbol, exchange);
+CREATE INDEX IF NOT EXISTS idx_index_universe_isin   ON index_universe(isin);
+
+-- Legacy compat: preserved so old scripts that SELECT FROM nifty100_universe keep
+-- working. Reads only the NIFTY 100 slice of index_universe.
+CREATE VIEW IF NOT EXISTS nifty100_universe AS
+  SELECT symbol, exchange, isin, tradingsymbol, instrument_token, company, sector, as_of_date
+  FROM index_universe
+  WHERE index_name = 'NIFTY 100';
+
+-- Daily OHLCV from Kite Connect /historical/day. One row per (instrument_token, date).
+-- Prices stored in paise (INTEGER) for exactness; volume as raw share count.
+CREATE TABLE IF NOT EXISTS ohlc_daily (
+  instrument_token INTEGER NOT NULL,
+  trade_date       TEXT NOT NULL,               -- YYYY-MM-DD (IST session date)
+  open             INTEGER NOT NULL,            -- paise
+  high             INTEGER NOT NULL,            -- paise
+  low              INTEGER NOT NULL,            -- paise
+  close            INTEGER NOT NULL,            -- paise
+  volume           INTEGER NOT NULL,            -- shares
+  fetched_at       TEXT NOT NULL,               -- ISO-8601 UTC
+  UNIQUE (instrument_token, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_ohlc_series ON ohlc_daily(instrument_token, trade_date);
+
+-- Live/intraday quotes fetched during market hours from NSE NextApi (getPeerComparisonData).
+-- Overrides today's ohlc_daily.close with the "so-far" price when the scanner runs.
+-- Not authoritative — nightly bhavcopy replaces the day's row in ohlc_daily proper.
+-- One row per (instrument_token, quote_date). The quote_date is IST session date;
+-- fetched_at is when we last pinged NSE for it.
+CREATE TABLE IF NOT EXISTS ohlc_intraday (
+  instrument_token INTEGER NOT NULL,
+  quote_date       TEXT NOT NULL,          -- IST YYYY-MM-DD
+  ltp              INTEGER NOT NULL,       -- paise (last traded price = current running "close")
+  day_high         INTEGER,                -- paise, best-effort from PeerComparison "High"
+  day_low          INTEGER,                -- paise
+  day_volume       INTEGER,                -- shares traded so far today
+  perc_change      REAL,                   -- % vs previous close (from NSE)
+  source           TEXT DEFAULT 'nse-nextapi',
+  fetched_at       TEXT NOT NULL,          -- ISO-8601 UTC
+  UNIQUE (instrument_token, quote_date)
+);
+CREATE INDEX IF NOT EXISTS idx_intraday_date ON ohlc_intraday(quote_date);
+
+-- Screener /screen/raw/ query results cache. One row per (query_hash, symbol, run_date).
+-- The scanner reads the LATEST run per query and treats the resulting symbols as the
+-- quality-approved pool, replacing the per-stock fundamentals-based gate.
+CREATE TABLE IF NOT EXISTS screener_screen_cache (
+  query_hash   TEXT NOT NULL,      -- sha256 of the query string; stable across runs
+  run_date     TEXT NOT NULL,      -- IST YYYY-MM-DD
+  run_ts       TEXT NOT NULL,      -- ISO-8601 UTC of the fetch
+  symbol       TEXT NOT NULL,      -- NSE tradingsymbol (mapped from Screener's display name)
+  company      TEXT,               -- Screener's company display name
+  screener_id  TEXT,               -- Screener's internal company slug (e.g., 'reliance-industries')
+  metrics      TEXT,               -- JSON: full row of columns Screener returned
+  UNIQUE (query_hash, run_date, symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_screen_run ON screener_screen_cache(query_hash, run_date);
+
+-- Signals emitted by scripts/scan-nifty100-signals.ts. Dedup key is (symbol,scan_date):
+-- a stock firing on the same scan date won't re-insert, but multiple scans across
+-- different days append independent rows. This lets us keep a trade log without
+-- storing external order state.
+CREATE TABLE IF NOT EXISTS signals (
+  symbol         TEXT NOT NULL,
+  exchange       TEXT NOT NULL,
+  scan_date      TEXT NOT NULL,                 -- YYYY-MM-DD (IST scan session date)
+  scan_time      TEXT NOT NULL,                 -- ISO-8601 UTC of scan execution
+  side           TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+  entry_paise    INTEGER NOT NULL,              -- suggested max entry price (paise)
+  stop_paise     INTEGER NOT NULL,              -- stop-loss trigger (paise)
+  target_paise   INTEGER NOT NULL,              -- profit target (paise)
+  risk_reward    REAL NOT NULL,                 -- target-entry / entry-stop
+  atr14_paise    INTEGER,                       -- ATR(14) used for the stop
+  mom_rank       INTEGER,                       -- 1-based rank within eligible universe
+  mom_score      REAL,                          -- vol-adjusted 12-1 momentum score
+  reasons        TEXT,                          -- JSON: {quality:{...}, technical:{...}}
+  UNIQUE (symbol, exchange, scan_date, side)
+);
+CREATE INDEX IF NOT EXISTS idx_signals_date ON signals(scan_date, side);
+
+-- Simulated open positions. Not real trades — the scanner opens a "paper"
+-- position when a signal fires, then tracks it through every subsequent scan.
+-- Exits when: today's low ≤ stop_paise, or today's high ≥ target_paise, or
+-- >= 60 trading days have passed since entry. At +1R unrealized, stop moves
+-- to breakeven. The Telegram digest includes an [Active positions] section.
+CREATE TABLE IF NOT EXISTS open_positions (
+  symbol             TEXT NOT NULL,
+  exchange           TEXT NOT NULL,
+  entry_scan_date    TEXT NOT NULL,       -- IST YYYY-MM-DD (scan_date that fired the signal)
+  entry_scan_time    TEXT NOT NULL,       -- ISO-8601 UTC (from signals.scan_time)
+  side               TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+  entry_paise        INTEGER NOT NULL,
+  initial_stop_paise INTEGER NOT NULL,
+  current_stop_paise INTEGER NOT NULL,    -- mutates over time (moves to breakeven at +1R, then trails)
+  target_paise       INTEGER NOT NULL,
+  atr14_paise        INTEGER,
+  status             TEXT NOT NULL DEFAULT 'open'
+                        CHECK (status IN ('open','target_hit','stopped','time_exit','manual_closed')),
+  exit_date          TEXT,                 -- YYYY-MM-DD when exit fired
+  exit_paise         INTEGER,              -- realized price
+  exit_reason        TEXT,                 -- description
+  bars_held          INTEGER NOT NULL DEFAULT 0,  -- trading days between entry and today (advances daily)
+  UNIQUE (symbol, exchange, entry_scan_date, side)
+);
+CREATE INDEX IF NOT EXISTS idx_open_positions_status ON open_positions(status);
+CREATE INDEX IF NOT EXISTS idx_open_positions_symbol ON open_positions(symbol, exchange);

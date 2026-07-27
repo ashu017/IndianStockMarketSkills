@@ -7,6 +7,7 @@ import { paiseToRupees } from "@/lib/money";
 import type { PortfolioSummary } from "@/lib/types";
 import TopNav from "@/components/portfolio/TopNav";
 import OverviewClient from "@/components/portfolio/OverviewClient";
+import SymbolSearch from "@/components/portfolio/SymbolSearch";
 
 const USER = process.env.PORTFOLIO_USER_ID ?? "local";
 
@@ -28,10 +29,16 @@ export default async function Page() {
     return (
       <>
         <TopNav currentPage="overview" />
+        <div className="max-w-[1200px] mx-auto px-4 pt-6">
+          <SymbolSearch />
+        </div>
         <div className="max-w-[1400px] mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center">
           <h1 className="text-2xl font-semibold text-foreground">Portfolio</h1>
           <p className="mt-3 text-muted-foreground">
             No holdings yet. Run <code>/portfolio</code> or click Refresh to fetch your Zerodha holdings.
+          </p>
+          <p className="mt-2 text-sm text-muted-foreground">
+            You can still analyze any NSE stock — use the search box above.
           </p>
         </div>
       </>
@@ -61,6 +68,9 @@ export default async function Page() {
   return (
     <>
       <TopNav currentPage="overview" sessionLabel={`As of ${summaryRow.snapshot_date}`} />
+      <div className="max-w-[1200px] mx-auto px-4 pt-4">
+        <SymbolSearch />
+      </div>
       <OverviewClient holdings={holdings} summary={summary} insights={loadInsights()} />
     </>
   );
