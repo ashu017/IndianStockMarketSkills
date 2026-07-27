@@ -18,17 +18,23 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
 
   const db = new Database(DB_PATH, { readonly: true });
   try {
-    // Union DISTINCT across all index memberships. LIKE with UPPER for case-insensitive match.
+    // A stock can appear in multiple index memberships (Nifty 100 ⊂ 200 ⊂ 500 ⊂ NSE-ALL).
+    // Dedup by symbol, preferring rows with a non-empty sector (Nifty seeds have sector;
+    // NSE-ALL bulk seed leaves sector blank). GROUP BY + MAX() picks whichever row has
+    // the longest sector string, i.e. any non-empty over the blank.
     const rows = db
       .prepare(
-        `SELECT DISTINCT symbol, company, sector
+        `SELECT symbol,
+                MAX(company)  AS company,
+                MAX(sector)   AS sector
          FROM index_universe
          WHERE UPPER(symbol) LIKE ? OR UPPER(company) LIKE ?
+         GROUP BY symbol
          ORDER BY
            CASE
              WHEN UPPER(symbol) = ? THEN 0
              WHEN UPPER(symbol) LIKE ? THEN 1
-             WHEN UPPER(company) LIKE ? THEN 2
+             WHEN UPPER(MAX(company)) LIKE ? THEN 2
              ELSE 3
            END,
            symbol

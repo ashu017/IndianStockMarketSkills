@@ -226,17 +226,32 @@ function parseBhavDate(s: string): string | null {
   return months[m[2]] ? `${m[3]}-${months[m[2]]}-${m[1]}` : null;
 }
 
+/**
+ * Bhavcopy top-up with two modes:
+ *   - Deep mode (default when we have < 200 existing bars for this token): fetch
+ *     ~400 calendar days back. Enables 200-DMA + 12-1 momentum on first-time
+ *     stocks. Slow the first time (~30-60s for 275 trading days) but subsequent
+ *     runs skip everything already in the DB.
+ *   - Shallow mode (>= 200 existing bars): fetch just the last 30 days to top up.
+ *
+ * Bhavcopy CSVs are cached on disk at /tmp/bhav-YYYY-MM-DD.csv so a second stock
+ * checked on the same day reuses the same CSV files — no re-download.
+ */
 async function ohlcTopUp(
   db: Database.Database,
   symbol: string,
   instrumentToken: number,
-  days = 30,
-): Promise<{ inserted: number; skipped: number }> {
+  daysOverride?: number,
+): Promise<{ inserted: number; skipped: number; mode: "deep" | "shallow"; existing_before: number }> {
   const existing = new Set(
     (db.prepare(`SELECT trade_date FROM ohlc_daily WHERE instrument_token=?`)
       .all(instrumentToken) as { trade_date: string }[])
       .map((r) => r.trade_date),
   );
+  const existingBefore = existing.size;
+  // First-time-or-thin: go deep. Threshold 200 = enough for 200-DMA.
+  const deep = daysOverride === undefined ? existingBefore < 200 : false;
+  const days = daysOverride ?? (deep ? 500 : 30);
 
   const upsert = db.prepare(
     `INSERT INTO ohlc_daily(instrument_token, trade_date, open, high, low, close, volume, fetched_at)
@@ -250,6 +265,11 @@ async function ohlcTopUp(
   const fetchedAt = new Date().toISOString();
   let inserted = 0, skipped = 0;
 
+  // Symbols like "M&M" and "BAJAJ-AUTO" need URL-safe handling in bhavcopy?
+  // No — bhavcopy is filtered by SYMBOL column, exact string match on parts[0].
+  const cacheDir = "/tmp";
+  const { readFileSync: rs, writeFileSync: ws, existsSync } = require("node:fs") as typeof import("node:fs");
+
   for (let i = 0; i <= days; i++) {
     const d = new Date(now - i * dayMs);
     const dow = d.getUTCDay();
@@ -257,10 +277,21 @@ async function ohlcTopUp(
     const dstr = d.toISOString().slice(0, 10);
     if (existing.has(dstr)) { skipped++; continue; }
 
-    const res = await fetch(BHAV_URL(fmtDdMmYyyy(d)), { headers: { "User-Agent": "Mozilla/5.0" } });
-    if (res.status === 404) continue;
-    if (!res.ok) continue;
-    const csv = await res.text();
+    // Disk cache for the bhavcopy file — reuse across stocks + across script runs.
+    const cachePath = `${cacheDir}/bhav-${dstr}.csv`;
+    let csv: string;
+    if (existsSync(cachePath)) {
+      csv = rs(cachePath, "utf8");
+    } else {
+      const res = await fetch(BHAV_URL(fmtDdMmYyyy(d)), { headers: { "User-Agent": "Mozilla/5.0" } });
+      if (res.status === 404) continue;
+      if (!res.ok) continue;
+      csv = await res.text();
+      try { ws(cachePath, csv); } catch { /* ok if /tmp is full */ }
+      // Polite pause only when we hit the network
+      await new Promise((r) => setTimeout(r, 150));
+    }
+
     for (const line of csv.trim().split("\n").slice(1)) {
       const parts = line.split(",").map((s) => s.trim());
       if (parts.length < 15) continue;
@@ -277,10 +308,8 @@ async function ohlcTopUp(
       existing.add(td);
       inserted++;
     }
-    // Polite pause between bhavcopy files
-    await new Promise((r) => setTimeout(r, 150));
   }
-  return { inserted, skipped };
+  return { inserted, skipped, mode: deep ? "deep" : "shallow", existing_before: existingBefore };
 }
 
 // -------------- Seed arbitrary-symbol into index_universe --------------
