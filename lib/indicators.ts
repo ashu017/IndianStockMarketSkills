@@ -123,6 +123,147 @@ export function avgVolume(volumes: number[], n = 20): number | null {
 }
 
 /**
+ * Minimal OHLC shape for Yang-Zhang volatility. Any object with these four
+ * fields works — the full `OHLC` interface above (which also has `volume`) is
+ * a superset and can be passed directly.
+ */
+export interface OhlcBar {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
+/**
+ * Yang-Zhang OHLC volatility estimator (Yang & Zhang 2000).
+ *
+ * More efficient than close-to-close stdev because it uses the full O/H/L/C for
+ * every bar — captures overnight jumps AND intraday range. That's exactly what
+ * momentum-vs-vol scoring needs on gappy Indian equities where a single
+ * event-driven overnight move can dwarf a week of intraday drift.
+ *
+ * Requires `window + 1` bars (bar 0 is the anchor for the first overnight
+ * return; bars 1..N are the window). Returns the RAW daily sigma (not
+ * annualized) so it drops into `volAdjMomentum` as a direct denominator.
+ *
+ * Returns null when:
+ *   - fewer than window+1 bars supplied
+ *   - window < 2 (need at least 2 data points for a sample stdev)
+ *   - any bar has a non-positive price
+ *   - any bar has high < low (malformed)
+ *
+ *   σ_o² = sample-variance of ln(open_i / close_{i-1})
+ *   σ_c² = sample-variance of ln(close_i / open_i)
+ *   σ_rs² = mean of [ ln(H/C)·ln(H/O) + ln(L/C)·ln(L/O) ]  (Rogers-Satchell, drift-free)
+ *   k     = 0.34 / (1.34 + (N+1)/(N-1))
+ *   σ_YZ² = σ_o² + k·σ_c² + (1-k)·σ_rs²
+ */
+export function yangZhangVolatility(
+  bars: OhlcBar[],
+  window: number,
+): number | null {
+  if (window < 2) return null;
+  if (bars.length < window + 1) return null;
+  // Take the last window+1 bars — bar 0 is the "anchor" for the first overnight.
+  const slice = bars.slice(bars.length - (window + 1));
+  // Validate all bars first (positive prices, high >= low).
+  for (const b of slice) {
+    if (
+      !Number.isFinite(b.open) ||
+      !Number.isFinite(b.high) ||
+      !Number.isFinite(b.low) ||
+      !Number.isFinite(b.close)
+    ) {
+      return null;
+    }
+    if (b.open <= 0 || b.high <= 0 || b.low <= 0 || b.close <= 0) return null;
+    if (b.high < b.low) return null;
+  }
+  const N = window;
+  const overnight: number[] = []; // ln(open_i / close_{i-1})
+  const openToClose: number[] = []; // ln(close_i / open_i)
+  let rsSum = 0; // Σ Rogers-Satchell terms
+  for (let i = 1; i <= N; i++) {
+    const prev = slice[i - 1];
+    const b = slice[i];
+    overnight.push(Math.log(b.open / prev.close));
+    openToClose.push(Math.log(b.close / b.open));
+    const hc = Math.log(b.high / b.close);
+    const ho = Math.log(b.high / b.open);
+    const lc = Math.log(b.low / b.close);
+    const lo = Math.log(b.low / b.open);
+    rsSum += hc * ho + lc * lo;
+  }
+  const sampleVar = (xs: number[]): number => {
+    const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+    let sq = 0;
+    for (const x of xs) sq += (x - m) * (x - m);
+    return sq / (xs.length - 1);
+  };
+  const sigmaO2 = sampleVar(overnight);
+  const sigmaC2 = sampleVar(openToClose);
+  const sigmaRS2 = rsSum / N;
+  const k = 0.34 / (1.34 + (N + 1) / (N - 1));
+  const yz2 = sigmaO2 + k * sigmaC2 + (1 - k) * sigmaRS2;
+  if (yz2 < 0 || !Number.isFinite(yz2)) return null;
+  return Math.sqrt(yz2);
+}
+
+/**
+ * Same shape as `volAdjMomentum` but uses Yang-Zhang OHLC volatility as the
+ * denominator instead of close-to-close stdev. If OHLC fields are missing or
+ * the YZ call returns null, falls back to `volAdjMomentum` on the close series.
+ *
+ * The volatility is estimated over the trailing `volWindow` bars (default 14),
+ * which is short enough to reflect the current regime but long enough to be
+ * numerically stable. The MOMENTUM return itself is still measured over the
+ * `[t - tPast, t - tSkip]` window — only the denominator changes.
+ */
+export function volAdjMomentumYZ(
+  bars: OhlcBar[],
+  tPast = 252,
+  tSkip = 21,
+  volWindow = 14,
+): number | null {
+  if (tPast <= tSkip) throw new Error("tPast must be > tSkip");
+  if (!Array.isArray(bars) || bars.length === 0) return null;
+  // Validate OHLC shape on the tail (cheap; if the shape is off, fall back).
+  const closes: number[] = new Array(bars.length);
+  let shapeOk = true;
+  for (let i = 0; i < bars.length; i++) {
+    const b = bars[i];
+    if (
+      !b ||
+      typeof b.open !== "number" ||
+      typeof b.high !== "number" ||
+      typeof b.low !== "number" ||
+      typeof b.close !== "number"
+    ) {
+      shapeOk = false;
+      break;
+    }
+    closes[i] = b.close;
+  }
+  if (!shapeOk) {
+    const c = bars.map((b) => (b as { close?: number })?.close ?? NaN);
+    return volAdjMomentum(c, tPast, tSkip);
+  }
+  if (closes.length <= tPast) return null;
+  const end = closes.length - 1 - tSkip;
+  const start = closes.length - 1 - tPast;
+  if (start < 0 || end <= start) return null;
+  const priceStart = closes[start];
+  const priceEnd = closes[end];
+  if (priceStart <= 0 || priceEnd <= 0) return null;
+  const totalReturn = priceEnd / priceStart - 1;
+  const sigma = yangZhangVolatility(bars, volWindow);
+  if (sigma === null || sigma === 0) {
+    return volAdjMomentum(closes, tPast, tSkip);
+  }
+  return totalReturn / sigma;
+}
+
+/**
  * Golden Cross regime check: last close > 200-SMA AND 50-SMA > 200-SMA.
  * Both conditions must hold; either failure returns false. Null when
  * insufficient history to compute the 200-SMA.

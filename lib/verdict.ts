@@ -4,6 +4,7 @@ import {
   atr,
   donchianLow,
   volAdjMomentum,
+  volAdjMomentumYZ,
   avgVolume,
   goldenCross,
   isDonchianBreakout,
@@ -370,7 +371,14 @@ export function evaluate(input: EvaluateInput): StockVerdict {
         volNote = `intraday-extrapolated: raw ${lastVol.toLocaleString()} ÷ ${frac.toFixed(2)} = ${Math.round(extrapolatedVol).toLocaleString()} full-day equiv`;
       }
     }
-    const mom = volAdjMomentum(closes, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP);
+    // Momentum denominator: default is close-to-close stdev (backwards compatible).
+    // Set VOL_ESTIMATOR=yang_zhang to switch to the Yang-Zhang OHLC estimator,
+    // which captures overnight gaps + intraday range — much better for gappy
+    // Indian equities. Env-gated so we can A/B cleanly without a schema change.
+    const useYZ = process.env.VOL_ESTIMATOR === "yang_zhang";
+    const mom = useYZ
+      ? volAdjMomentumYZ(bars, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP)
+      : volAdjMomentum(closes, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP);
     const atr14 = atr(bars, TECHNICAL_THRESHOLDS.ATR_PERIOD);
     const dLow20 = donchianLow(lows, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
 
