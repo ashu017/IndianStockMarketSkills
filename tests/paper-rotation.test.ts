@@ -4,11 +4,14 @@ import { test, expect, beforeEach, describe } from "vitest";
 import { ensureAccount, openPaperTrade } from "@/lib/paper";
 
 /**
- * Rotation logic: when the concurrent cap is hit, an incoming signal can evict
- * the weakest-momentum open position, but only when:
+ * Rotation logic (qlib TopkDropoutStrategy pattern): when the concurrent cap is
+ * hit, merge eligible incumbents + the incoming candidate, sort DESC by
+ * mom_score, and keep the top-N (N = eligible count). If the candidate lands in
+ * the top-N, evict the incumbent that got dropped (by construction the weakest
+ * eligible one). Eligibility guardrails still apply:
  *   - Incumbent has bars_held ≥ 5 (grace period)
  *   - Incumbent is NOT at breakeven (current_stop < entry)
- *   - Incoming mom_score ≥ 1.20× worst-open mom_score
+ *   - Incumbent's mom_score must be known
  * These tests build a paper account manually (max_concurrent_trades = 2 for
  * brevity) and exercise every branch.
  */
@@ -79,7 +82,7 @@ describe("rotation logic in openPaperTrade", () => {
     makeAccount(db, 2);
   });
 
-  test("(a) at cap, incoming mom_score < 1.20× worst → NO rotation", () => {
+  test("(a) at cap, incoming below all eligible incumbents → NO rotation", () => {
     openTrade(db, "AAA");
     openTrade(db, "BBB");
     const r = openPaperTrade(db, {
@@ -92,7 +95,7 @@ describe("rotation logic in openPaperTrade", () => {
       stop_paise: 279_00,
       target_paise: 363_00,
       atr14_paise: 500,
-      mom_score: 1.10,                       // only 1.10× worst
+      mom_score: 0.90,                       // below both incumbents
       open_mom_scores: new Map([["AAA", 1.00], ["BBB", 1.05]]),
     });
     expect(r.opened).toBe(false);
@@ -100,7 +103,7 @@ describe("rotation logic in openPaperTrade", () => {
     expect(r.rotation).toBeUndefined();
   });
 
-  test("(b) at cap, incoming mom_score ≥ 1.20× worst and worst is eligible → ROTATE", () => {
+  test("(b) at cap, incoming above weakest eligible incumbent → ROTATE", () => {
     const aaaId = openTrade(db, "AAA");
     openTrade(db, "BBB");
     const r = openPaperTrade(db, {
@@ -113,7 +116,10 @@ describe("rotation logic in openPaperTrade", () => {
       stop_paise: 279_00,
       target_paise: 363_00,
       atr14_paise: 500,
-      mom_score: 1.50,                       // 1.50× > 1.20 × 1.00 = 1.20
+      // Merged DESC = [BBB 1.30, CCC 1.10, AAA 1.00]; top-2 = {BBB, CCC}; AAA
+      // is displaced. Incoming is only barely above the weakest, but the new
+      // ranking-based logic still rotates.
+      mom_score: 1.10,
       open_mom_scores: new Map([["AAA", 1.00], ["BBB", 1.30]]),
     });
     expect(r.opened).toBe(true);
@@ -142,9 +148,10 @@ describe("rotation logic in openPaperTrade", () => {
       stop_paise: 279_00,
       target_paise: 363_00,
       atr14_paise: 500,
-      // AAA has the lowest mom_score but is at breakeven → skip.
-      // BBB's mom_score is 2.00; incoming 2.10 → only 1.05× BBB → below 1.20×.
-      mom_score: 2.10,
+      // AAA (mom 1.00) at breakeven → skipped from eligible set.
+      // Only BBB (2.00) is eligible; incoming 1.90 is below BBB → merged top-1
+      // is {BBB}, candidate not in top-N → no rotation.
+      mom_score: 1.90,
       open_mom_scores: new Map([["AAA", 1.00], ["BBB", 2.00]]),
     });
     expect(r.opened).toBe(false);
@@ -165,10 +172,11 @@ describe("rotation logic in openPaperTrade", () => {
       stop_paise: 279_00,
       target_paise: 363_00,
       atr14_paise: 500,
-      mom_score: 2.10,
+      // Only BBB is eligible (AAA is inside grace period). BBB's mom is 2.00;
+      // incoming 1.90 is below BBB → merged top-1 = {BBB}, candidate excluded.
+      mom_score: 1.90,
       open_mom_scores: new Map([["AAA", 1.00], ["BBB", 2.00]]),
     });
-    // Only BBB was eligible; incoming 2.10 is only 1.05× BBB → below 1.20×.
     expect(r.opened).toBe(false);
     expect(r.reason).toContain("concurrent_cap");
   });

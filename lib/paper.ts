@@ -20,9 +20,9 @@ const BREAKEVEN_R_MULTIPLE = 1;
 const TRAIL_R_MULTIPLE = 2;
 
 // Rotation defaults. When the concurrent cap is hit, an incoming signal can
-// evict the weakest open position — but only when the edge is meaningful and
-// the incumbent hasn't earned protection yet.
-const ROTATION_MOM_MULTIPLIER = 1.20;   // incoming mom_score must be ≥ 1.20× worst-open
+// evict the weakest-momentum eligible open position via a merged-ranking pass
+// (qlib's TopkDropoutStrategy pattern). Guardrails still protect fresh trades
+// and any position that has locked in a breakeven stop.
 const ROTATION_MIN_BARS_HELD = 5;       // incumbents younger than 5 bars are protected
 
 // ---------- Types ----------
@@ -290,15 +290,18 @@ export function openPaperTrade(db: Database.Database, s: OpenTradeInput): OpenTr
 }
 
 /**
- * When the concurrent cap is hit, evict the weakest-momentum open position if
- * the incoming signal has a meaningful edge. Guardrails:
+ * When the concurrent cap is hit, decide whether the incoming signal should
+ * displace an existing position using qlib's TopkDropoutStrategy pattern:
+ * merge eligible incumbents + the candidate, rank DESC by mom_score, keep the
+ * top-N (N = eligible count). If the candidate lands in the top-N while an
+ * incumbent is dropped, evict that incumbent (always the weakest eligible one
+ * by construction). Guardrails:
  *   - Incumbent must have bars_held ≥ ROTATION_MIN_BARS_HELD (grace period)
  *   - Incumbent must NOT have moved to breakeven (protect working trades)
  *   - Incumbent must have a known mom_score in open_mom_scores
- *   - Incoming mom_score must be ≥ ROTATION_MOM_MULTIPLIER × worst incumbent
  * Returns the RotationEvent (with the eviction already committed to DB and
  * cash restored) so the caller can proceed with the open. Returns undefined
- * when no eligible incumbent exists — the caller then rejects the signal.
+ * when no eligible incumbent exists or the candidate doesn't outrank any.
  */
 function maybeRotateOut(
   db: Database.Database,
@@ -318,9 +321,8 @@ function maybeRotateOut(
     initial_stop_paise: number; current_stop_paise: number; qty: number; bars_held: number;
   }[];
 
-  // Rank eligible incumbents by mom_score ASC (weakest first). Exclude any
-  // whose mom_score is unknown, or that are at breakeven, or below the bar-held
-  // grace period.
+  // Build the eligible set. Exclude any incumbent whose mom_score is unknown,
+  // at breakeven, or still inside the bar-held grace period.
   type Eligible = { row: typeof open[number]; mom: number };
   const eligible: Eligible[] = [];
   for (const r of open) {
@@ -331,17 +333,35 @@ function maybeRotateOut(
     eligible.push({ row: r, mom });
   }
   if (eligible.length === 0) return undefined;
+
+  const inMom = s.mom_score;
+
+  // Merged-ranking eviction (qlib TopkDropoutStrategy):
+  //   merged = eligible incumbents ∪ { candidate }, sort DESC by mom_score,
+  //   keep top-N where N = eligible.length. If the candidate is in the top-N
+  //   AND at least one incumbent is displaced, the displaced incumbent is by
+  //   construction the weakest eligible one.
+  const N = eligible.length;
+  type Merged = { isCandidate: boolean; mom: number; el?: Eligible };
+  const merged: Merged[] = eligible.map((e) => ({ isCandidate: false, mom: e.mom, el: e }));
+  merged.push({ isCandidate: true, mom: inMom });
+  // Sort DESC by mom_score. Ties: keep candidate BELOW incumbents (stable
+  // preference for the status quo — if the candidate merely ties the weakest,
+  // no rotation).
+  merged.sort((a, b) => {
+    if (b.mom !== a.mom) return b.mom - a.mom;
+    // Candidate loses ties: incumbent (isCandidate=false) sorts first.
+    return Number(a.isCandidate) - Number(b.isCandidate);
+  });
+  const topN = merged.slice(0, N);
+  const candidateInTop = topN.some((m) => m.isCandidate);
+  if (!candidateInTop) return undefined;
+  // Whichever eligible incumbent fell out of the top-N is the eviction target.
+  // Since the candidate consumed one slot and the sort is DESC, that must be
+  // the weakest eligible incumbent.
   eligible.sort((a, b) => a.mom - b.mom);
   const worst = eligible[0];
-
-  // Signed mom scores can be negative; require enough separation without
-  // dividing by ~0. Use absolute delta as a fallback when |worst.mom| is tiny.
-  const inMom = s.mom_score;
   const worstMom = worst.mom;
-  const passes = worstMom > 0
-    ? inMom >= worstMom * ROTATION_MOM_MULTIPLIER
-    : inMom - worstMom >= Math.abs(worstMom) * (ROTATION_MOM_MULTIPLIER - 1) + 0.01;
-  if (!passes) return undefined;
 
   // Close the incumbent at LTP (fallback to entry when no bar is available).
   const token = tokenForSymbol(db, worst.row.symbol, worst.row.exchange);
@@ -350,6 +370,8 @@ function maybeRotateOut(
   const realized = (exitPrice - worst.row.entry_paise) * worst.row.qty;
   const proceeds = exitPrice * worst.row.qty;
   const now = nowIso();
+  // mom_ratio is informational only under the new logic. Preserve the old
+  // shape: ratio when worst > 0, else signed delta.
   const ratio = worstMom > 0 ? inMom / worstMom : inMom - worstMom;
   const reason = `rotated_out for ${s.symbol} (mom ${inMom.toFixed(3)} vs ${worstMom.toFixed(3)}, ratio ${worstMom > 0 ? ratio.toFixed(2) + "x" : "+" + ratio.toFixed(3)})`;
   db.prepare(
