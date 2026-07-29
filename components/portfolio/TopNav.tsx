@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart2 } from "lucide-react";
 
 interface Props {
-  currentPage: "overview" | "deepdive";
+  currentPage: "overview" | "deepdive" | "paper";
   stockSymbol?: string;
   sessionLabel?: string;
 }
@@ -21,12 +21,18 @@ export default function TopNav({ currentPage, stockSymbol, sessionLabel }: Props
           <span className="font-semibold text-foreground tracking-tight">Folio</span>
         </Link>
 
-        <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <Link
             href="/"
             className={`hover:text-foreground transition-colors ${currentPage === "overview" ? "text-foreground font-medium" : ""}`}
           >
             Overview
+          </Link>
+          <Link
+            href="/paper"
+            className={`hover:text-foreground transition-colors ${currentPage === "paper" ? "text-foreground font-medium" : ""}`}
+          >
+            Paper trading
           </Link>
           {currentPage === "deepdive" && stockSymbol && (
             <>

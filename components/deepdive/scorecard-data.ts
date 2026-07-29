@@ -14,7 +14,8 @@ const LABELS: Record<string, string> = {
   promoter_holding: "Promoter Holding",
 };
 
-// Suffix applied to the numeric display string, per metric.
+// Suffix + precision applied to the numeric display string, per metric.
+// Percents get 1 decimal (e.g. "10.9%"); ratios get 2 decimals (e.g. "3.44×").
 const PERCENT_KEYS = new Set([
   "roe",
   "roce",
@@ -25,10 +26,23 @@ const PERCENT_KEYS = new Set([
 ]);
 const RATIO_KEYS = new Set(["pe", "pb", "debt_equity"]);
 
-function suffixFor(key: string): string {
-  if (PERCENT_KEYS.has(key)) return "%";
-  if (RATIO_KEYS.has(key)) return "×";
-  return "";
+function formatCoreValue(key: string, value: number): string {
+  if (PERCENT_KEYS.has(key)) return `${value.toFixed(1)}%`;
+  if (RATIO_KEYS.has(key)) return `${value.toFixed(2)}×`;
+  return `${value}`;
+}
+
+function formatExtraValue(value: number, unit: string | null | undefined): string {
+  const u = unit ?? "";
+  // Recognized unit → sensible precision. Falls back to raw for unknown units.
+  if (u === "%" || u === "pct" || u === "pct_points") return `${value.toFixed(1)}%`;
+  if (u === "×" || u === "x") return `${value.toFixed(2)}×`;
+  if (u === "days") return `${Math.round(value)} days`;
+  if (u === "crore_rupees" || u === "cr") return `₹${value.toLocaleString("en-IN")} Cr`;
+  // Numeric-only fields (no unit at all): tolerate very small numbers with 2 decimals,
+  // otherwise round to integer.
+  if (!u) return Math.abs(value) < 10 ? value.toFixed(2) : `${Math.round(value)}`;
+  return `${value}${u}`;
 }
 
 type ExtraLike = { metric_key: string; value_num: number | null; unit?: string | null };
@@ -48,7 +62,7 @@ export function buildScorecard(
     if (value == null || !(key in LABELS)) continue;
     items.push({
       label: LABELS[key],
-      value: `${value}${suffixFor(key)}`,
+      value: formatCoreValue(key, value),
       grade: gradeMetric(sector, key, value),
     });
   }
@@ -57,7 +71,7 @@ export function buildScorecard(
     if (e.value_num == null) continue;
     items.push({
       label: e.metric_key,
-      value: `${e.value_num}${e.unit ?? ""}`,
+      value: formatExtraValue(e.value_num, e.unit),
       grade: gradeMetric(sector, e.metric_key, e.value_num),
     });
   }

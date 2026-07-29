@@ -36,7 +36,7 @@ export default function StockCharts({
   isGain,
 }: {
   symbol: string;
-  avgPrice: number;
+  avgPrice?: number;
   isGain: boolean;
 }) {
   const [metric, setMetric] = useState<MetricKey>("price");
@@ -152,12 +152,14 @@ export default function StockCharts({
                     );
                   }}
                 />
-                <ReferenceLine
-                  y={avgPrice}
-                  stroke="#94A3B8"
-                  strokeDasharray="4 3"
-                  label={{ value: `Avg ${fmtINR(avgPrice, 0)}`, position: "insideTopRight", fontSize: 10, fill: "#64748B" }}
-                />
+                {avgPrice !== undefined && (
+                  <ReferenceLine
+                    y={avgPrice}
+                    stroke="#94A3B8"
+                    strokeDasharray="4 3"
+                    label={{ value: `Avg ${fmtINR(avgPrice, 0)}`, position: "insideTopRight", fontSize: 10, fill: "#64748B" }}
+                  />
+                )}
                 <Area type="monotone" dataKey="value" stroke={color} strokeWidth={2} fill={`url(#g-${symbol})`} dot={false} activeDot={{ r: 4, fill: color, stroke: "#fff", strokeWidth: 2 }} />
               </AreaChart>
             ) : (
