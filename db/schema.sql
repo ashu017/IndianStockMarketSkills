@@ -101,6 +101,23 @@ CREATE TABLE IF NOT EXISTS analysis (
   UNIQUE (isin)
 );
 
+-- Point-in-time snapshot of the scanner universe, captured on every scanner run.
+-- Guards against survivorship bias in walk-forward backtests: a stock delisted or
+-- dropped from the Screener screen in 2023 must still appear in a 2023 query.
+CREATE TABLE IF NOT EXISTS universe_snapshot (
+  snapshot_date TEXT NOT NULL,        -- IST YYYY-MM-DD
+  symbol        TEXT NOT NULL,
+  exchange      TEXT NOT NULL,
+  isin          TEXT,
+  sector        TEXT,
+  index_name    TEXT,                 -- 'NIFTY 500', 'AD-HOC', etc.
+  in_screener   INTEGER NOT NULL DEFAULT 0,  -- 1 if in latest Screener screen on this date
+  mcap_rs_cr    REAL,                 -- market cap in Rs Crore, if available
+  PRIMARY KEY (snapshot_date, symbol, exchange)
+);
+CREATE INDEX IF NOT EXISTS idx_universe_snapshot_date ON universe_snapshot(snapshot_date);
+CREATE INDEX IF NOT EXISTS idx_universe_snapshot_symbol ON universe_snapshot(symbol);
+
 -- Latest snapshot per (user, symbol, exchange). ROW_NUMBER() (portable to Postgres),
 -- NOT SQLite's bare-MAX()+GROUP BY idiom which is undefined on other engines.
 CREATE VIEW IF NOT EXISTS v_holdings_current AS
