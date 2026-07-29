@@ -22,6 +22,10 @@ import {
   snapshotAccountHistory,
   summarize as summarizePaper,
 } from "@/lib/paper";
+import {
+  demeanBySector,
+  isSectorDemeanEnabled,
+} from "@/lib/momentum-normalize";
 
 /**
  * The Nifty 100 / Nifty 200 signal scanner.
@@ -52,6 +56,9 @@ import {
  *   FORCE_REGIME=bull|bear    — override market-regime detection
  *   MOM_TOPN=30               — how many top-momentum stocks form the pool
  *   MAX_SIGNALS=5             — cap signals per scan (highest momentum first)
+ *   SECTOR_DEMEAN=1|0         — sector-demean momentum before top-N ranking so
+ *                               a single hot sector cannot flood the pool
+ *                               (default ON; set to "0" to disable for A/B).
  */
 
 interface UniverseRow {
@@ -246,9 +253,17 @@ function main(): void {
     candidates.push({ u, verdict, momentum });
   }
 
+  // Sector-demean momentum before ranking so one hot sector (Defence, PSU
+  // banks, etc.) cannot flood the top-N. Sectors with < 3 members are left
+  // alone — the mean over 1-2 names would zero them out spuriously. Disabled
+  // by SECTOR_DEMEAN=0 for A/B testing.
+  const demeanEnabled = isSectorDemeanEnabled(process.env);
+  const demean = demeanBySector(candidates, demeanEnabled);
+  const rankedCandidates = demean.candidates;
+
   // Rank by momentum desc, take top N.
-  candidates.sort((a, b) => (b.momentum ?? -Infinity) - (a.momentum ?? -Infinity));
-  const topN = candidates.slice(0, momTopN);
+  rankedCandidates.sort((a, b) => (b.momentum ?? -Infinity) - (a.momentum ?? -Infinity));
+  const topN = rankedCandidates.slice(0, momTopN);
   const momRank = new Map<string, number>();
   topN.forEach((c, i) => momRank.set(c.u.symbol, i + 1));
 
@@ -445,6 +460,7 @@ function main(): void {
         universe: universe.length,
         quality_survivors: candidates.length,
         momentum_top_n: topN.length,
+        sector_demean: demean.stats,
         signals_emitted: finalSignals.length,
         latest_bar_dates: [...latestBarDates],
         signals: finalSignals.map((s) => ({
