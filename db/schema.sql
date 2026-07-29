@@ -235,3 +235,66 @@ CREATE TABLE IF NOT EXISTS open_positions (
 );
 CREATE INDEX IF NOT EXISTS idx_open_positions_status ON open_positions(status);
 CREATE INDEX IF NOT EXISTS idx_open_positions_symbol ON open_positions(symbol, exchange);
+
+-- Paper trading: simulated portfolio state. One row per user (single-user for now).
+-- All amounts in paise (INTEGER) for exactness. `current_cash_paise` = free cash;
+-- `equity_paise` = free cash + Σ(unrealized value of every open paper_trade at LTP)
+-- — updated by lib/paper.ts on every cron fire.
+CREATE TABLE IF NOT EXISTS paper_account (
+  user_id                TEXT PRIMARY KEY,
+  starting_cash_paise    INTEGER NOT NULL,
+  current_cash_paise     INTEGER NOT NULL,     -- deducted when opening, restored on close
+  equity_paise           INTEGER NOT NULL,     -- cash + Σ(LTP × qty for open trades)
+  risk_pct_per_trade     REAL NOT NULL DEFAULT 1.0,   -- % of equity risked per trade
+  max_concurrent_trades  INTEGER NOT NULL DEFAULT 5,
+  max_position_pct       REAL NOT NULL DEFAULT 25.0,  -- cap capital per position
+  created_at             TEXT NOT NULL,
+  last_updated_at        TEXT NOT NULL
+);
+
+-- Paper trades: every simulated position, open or closed. `entry_signal_id` links
+-- to the signals table (nullable — allows manual entries via the UI). Realized
+-- P&L is populated on close; before that, P&L is computed on the fly from LTP.
+CREATE TABLE IF NOT EXISTS paper_trades (
+  id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id                 TEXT NOT NULL,
+  symbol                  TEXT NOT NULL,
+  exchange                TEXT NOT NULL,
+  entry_signal_scan_date  TEXT,                -- FK-ish → signals.scan_date; NULL for manual entries
+  entry_date              TEXT NOT NULL,       -- IST YYYY-MM-DD (== signals.scan_date at open time)
+  entry_time              TEXT NOT NULL,       -- ISO-8601 UTC
+  entry_paise             INTEGER NOT NULL,
+  qty                     INTEGER NOT NULL,    -- whole shares
+  capital_committed_paise INTEGER NOT NULL,    -- entry_paise × qty
+  initial_stop_paise      INTEGER NOT NULL,
+  current_stop_paise      INTEGER NOT NULL,    -- moves to breakeven at +1R, then trails
+  target_paise            INTEGER NOT NULL,
+  atr14_paise             INTEGER,
+  status                  TEXT NOT NULL DEFAULT 'open'
+                            CHECK (status IN ('open','target_hit','stopped','time_exit','manual_closed','rotated_out')),
+  exit_date               TEXT,
+  exit_time               TEXT,
+  exit_paise              INTEGER,
+  exit_reason             TEXT,
+  realized_pnl_paise      INTEGER,             -- populated on close
+  bars_held               INTEGER NOT NULL DEFAULT 0,
+  UNIQUE (user_id, symbol, exchange, entry_date)
+);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_open   ON paper_trades(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol ON paper_trades(symbol, exchange);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_entry  ON paper_trades(entry_date);
+
+-- Daily equity-curve snapshots. Written at the end-of-day scanner fire (last one
+-- of the trading day). Enables the account chart on /paper.
+CREATE TABLE IF NOT EXISTS paper_account_history (
+  user_id                 TEXT NOT NULL,
+  snapshot_date           TEXT NOT NULL,       -- IST YYYY-MM-DD
+  cash_paise              INTEGER NOT NULL,
+  unrealized_pnl_paise    INTEGER NOT NULL,    -- Σ((LTP - entry) × qty) across open
+  realized_pnl_paise      INTEGER NOT NULL,    -- cumulative to-date
+  equity_paise            INTEGER NOT NULL,    -- cash + Σ(LTP × qty)
+  open_position_count     INTEGER NOT NULL,
+  winners                 INTEGER NOT NULL,    -- open positions in profit
+  losers                  INTEGER NOT NULL,    -- open positions in loss
+  UNIQUE (user_id, snapshot_date)
+);

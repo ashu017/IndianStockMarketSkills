@@ -14,6 +14,14 @@ import {
   updateOpenPositions,
   loadActivePositions,
 } from "@/lib/positions";
+import {
+  ensureAccount,
+  openPaperTrade,
+  updateOpenPaperTrades,
+  loadActivePaperTrades,
+  snapshotAccountHistory,
+  summarize as summarizePaper,
+} from "@/lib/paper";
 
 /**
  * The Nifty 100 / Nifty 200 signal scanner.
@@ -300,35 +308,113 @@ function main(): void {
        target_paise=excluded.target_paise, risk_reward=excluded.risk_reward, atr14_paise=excluded.atr14_paise,
        mom_rank=excluded.mom_rank, mom_score=excluded.mom_score, reasons=excluded.reasons`,
   );
+  // Ensure the paper account exists (Rs 3L default if first run).
+  ensureAccount(db);
+
+  // Build a snapshot of the currently-open paper positions' momentum scores
+  // BEFORE we start opening new trades — the rotation logic in openPaperTrade
+  // consults this map to decide whether an incoming signal has enough edge to
+  // evict a weak incumbent.
+  const openMomScores = new Map<string, number>();
+  {
+    const openRows = db
+      .prepare(`SELECT symbol, exchange FROM paper_trades WHERE user_id='local' AND status='open'`)
+      .all() as { symbol: string; exchange: string }[];
+    for (const p of openRows) {
+      const u = db
+        .prepare(
+          `SELECT DISTINCT instrument_token FROM index_universe WHERE symbol=? AND exchange=? LIMIT 1`,
+        )
+        .get(p.symbol, p.exchange) as { instrument_token: number } | undefined;
+      if (!u) continue;
+      const closes = closesByToken.get(u.instrument_token) ?? (db
+        .prepare(`SELECT close FROM ohlc_daily WHERE instrument_token=? ORDER BY trade_date ASC`)
+        .all(u.instrument_token) as { close: number }[]).map((r) => r.close);
+      const mom = volAdjMomentum(
+        closes,
+        TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK,
+        TECHNICAL_THRESHOLDS.MOMENTUM_SKIP,
+      );
+      if (mom !== null && Number.isFinite(mom)) openMomScores.set(p.symbol, mom);
+    }
+  }
+
   let opened = 0;
+  const openSkipReasons: { symbol: string; reason: string }[] = [];
+  const rotations: {
+    out_symbol: string; in_symbol: string;
+    out_mom: number; in_mom: number; mom_ratio: number;
+    realized_pnl_rs: number;
+  }[] = [];
   const tx = db.transaction(() => {
     for (const s of finalSignals) {
       upsert.run(s);
-      // Open a simulated position for every newly-fired signal. INSERT OR NOTHING
-      // handles the case where we re-run the same scan_date.
-      if (
-        recordSignalAsPosition(db, {
-          symbol: s.symbol,
-          exchange: s.exchange,
-          scan_date: s.scan_date,
-          scan_time: s.scan_time,
-          side: s.side,
-          entry_paise: s.entry_paise,
-          stop_paise: s.stop_paise,
-          target_paise: s.target_paise,
-          atr14_paise: s.atr14_paise,
-        })
-      ) {
+      // Paper-trading engine — sizes qty from account equity, deducts cash,
+      // records the trade in paper_trades. Legacy open_positions is still written
+      // via recordSignalAsPosition() for backwards compat with any old readers.
+      recordSignalAsPosition(db, {
+        symbol: s.symbol, exchange: s.exchange, scan_date: s.scan_date, scan_time: s.scan_time,
+        side: s.side, entry_paise: s.entry_paise, stop_paise: s.stop_paise,
+        target_paise: s.target_paise, atr14_paise: s.atr14_paise,
+      });
+      const r = openPaperTrade(db, {
+        symbol: s.symbol,
+        exchange: s.exchange,
+        entry_signal_scan_date: s.scan_date,
+        scan_date: s.scan_date,
+        scan_time: s.scan_time,
+        entry_paise: s.entry_paise,
+        stop_paise: s.stop_paise,
+        target_paise: s.target_paise,
+        atr14_paise: s.atr14_paise,
+        mom_score: s.mom_score,
+        open_mom_scores: openMomScores,
+      });
+      if (r.opened) {
         opened++;
+        if (r.rotation) {
+          rotations.push({
+            out_symbol: r.rotation.out_symbol,
+            in_symbol: r.rotation.in_symbol,
+            out_mom: Number(r.rotation.out_mom_score.toFixed(3)),
+            in_mom: Number(r.rotation.in_mom_score.toFixed(3)),
+            mom_ratio: Number(r.rotation.mom_ratio.toFixed(3)),
+            realized_pnl_rs: r.rotation.realized_pnl_paise / 100,
+          });
+          // Rotated-out symbols are no longer eligible for further rotation
+          // in this same scan cycle.
+          openMomScores.delete(r.rotation.out_symbol);
+        }
+      } else {
+        openSkipReasons.push({ symbol: s.symbol, reason: r.reason ?? "unknown" });
       }
     }
   });
   tx();
 
-  // Advance every open position — check stops/targets/breakeven-moves/time exits.
-  const positionUpdate = updateOpenPositions(db);
-  positionUpdate.opened = opened;
-  const activePositions = loadActivePositions(db);
+  // Advance every open trade — check stops/targets/breakeven/time exits.
+  const positionUpdate = updateOpenPaperTrades(db);
+  // Also advance the legacy open_positions table so any reader that hasn't been
+  // migrated to paper_trades stays consistent. Zero cost when the table is empty.
+  updateOpenPositions(db);
+  const activePositions = loadActivePaperTrades(db).map((p) => ({
+    symbol: p.symbol,
+    entry_date: p.entry_date,
+    entry_paise: p.entry_paise,
+    qty: p.qty,
+    capital_committed_paise: p.capital_committed_paise,
+    current_stop_paise: p.current_stop_paise,
+    target_paise: p.target_paise,
+    latest_close_paise: p.latest_close_paise,
+    unrealized_pnl_paise: p.unrealized_pnl_paise,
+    unrealized_pct: p.unrealized_pct,
+    bars_held: p.bars_held,
+    moved_to_breakeven: p.moved_to_breakeven,
+  }));
+  // Snapshot the equity curve once per scan (upsert on today's date, so multiple
+  // fires per day just refresh the same row with the latest end-of-fire state).
+  snapshotAccountHistory(db);
+  const paperSummary = summarizePaper(db);
 
   const latestBarDates = new Set<string>();
   for (const u of universe) {
@@ -372,13 +458,31 @@ function main(): void {
           mom_score: s.mom_score !== null ? Number(s.mom_score.toFixed(3)) : null,
         })),
         position_update: positionUpdate,
+        rotations,
+        open_skips: openSkipReasons,
+        paper_account: paperSummary
+          ? {
+              starting_cash_rs: paperSummary.starting_cash_paise / 100,
+              current_cash_rs: paperSummary.current_cash_paise / 100,
+              equity_rs: paperSummary.equity_paise / 100,
+              return_pct: Number(paperSummary.total_return_pct.toFixed(2)),
+              realized_pnl_rs: paperSummary.realized_pnl_paise / 100,
+              unrealized_pnl_rs: paperSummary.unrealized_pnl_paise / 100,
+              open_count: paperSummary.open_count,
+              closed_count: paperSummary.closed_count,
+              win_rate_pct: paperSummary.win_rate_pct !== null ? Number(paperSummary.win_rate_pct.toFixed(1)) : null,
+            }
+          : null,
         active_positions: activePositions.map((p) => ({
           symbol: p.symbol,
           entry_date: p.entry_date,
           entry_rs: p.entry_paise / 100,
+          qty: p.qty,
+          capital_committed_rs: p.capital_committed_paise / 100,
           stop_rs: p.current_stop_paise / 100,
           target_rs: p.target_paise / 100,
           latest_close_rs: p.latest_close_paise !== null ? p.latest_close_paise / 100 : null,
+          unrealized_pnl_rs: p.unrealized_pnl_paise !== null ? Math.round(p.unrealized_pnl_paise / 100) : null,
           unrealized_pct: p.unrealized_pct !== null ? Number(p.unrealized_pct.toFixed(2)) : null,
           bars_held: p.bars_held,
           moved_to_breakeven: p.moved_to_breakeven,
