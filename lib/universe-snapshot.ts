@@ -71,3 +71,60 @@ export function loadUniverseAsOf(
     mcap_rs_cr: r.mcap_rs_cr,
   }));
 }
+
+/**
+ * Every snapshot date and its symbol set, loaded once.
+ *
+ * `loadUniverseAsOf` issues two queries per call, which is fine for a page
+ * request but not for a backtest that asks "who was in the universe?" on every
+ * one of ~900 trading days. A backtest loads this once and then resolves
+ * membership in memory via `eligibleSymbolsAsOf`.
+ */
+export interface UniverseTimeline {
+  /** Snapshot dates, ascending. Empty when the table has never been populated. */
+  dates: string[];
+  symbolsByDate: Map<string, Set<string>>;
+  first_date: string | null;
+  last_date: string | null;
+}
+
+export function loadUniverseTimeline(db: Database.Database): UniverseTimeline {
+  const rows = db
+    .prepare(
+      `SELECT snapshot_date, symbol FROM universe_snapshot ORDER BY snapshot_date ASC`,
+    )
+    .all() as { snapshot_date: string; symbol: string }[];
+
+  const symbolsByDate = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const set = symbolsByDate.get(r.snapshot_date);
+    if (set) set.add(r.symbol);
+    else symbolsByDate.set(r.snapshot_date, new Set([r.symbol]));
+  }
+  const dates = [...symbolsByDate.keys()].sort();
+  return {
+    dates,
+    symbolsByDate,
+    first_date: dates[0] ?? null,
+    last_date: dates[dates.length - 1] ?? null,
+  };
+}
+
+/**
+ * Symbols in the universe as of `date` — the latest snapshot on or before it,
+ * matching `loadUniverseAsOf`'s carry-forward semantics. Null when no snapshot
+ * precedes `date`, which callers must distinguish from "an empty universe":
+ * the first means "we have no idea", the second means "nothing qualified".
+ */
+export function eligibleSymbolsAsOf(
+  timeline: UniverseTimeline,
+  date: string,
+): Set<string> | null {
+  let found: string | null = null;
+  for (const d of timeline.dates) {
+    if (d <= date) found = d;
+    else break;
+  }
+  return found === null ? null : (timeline.symbolsByDate.get(found) ?? null);
+}
+

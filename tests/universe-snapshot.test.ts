@@ -92,3 +92,4 @@ test("in_screener=1 round-trips as boolean true; 0 as false", () => {
   expect(idea.in_screener).toBe(false);
   expect(idea.mcap_rs_cr).toBeNull();
 });
+

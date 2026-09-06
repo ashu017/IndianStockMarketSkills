@@ -248,6 +248,12 @@ CREATE TABLE IF NOT EXISTS open_positions (
   exit_paise         INTEGER,              -- realized price
   exit_reason        TEXT,                 -- description
   bars_held          INTEGER NOT NULL DEFAULT 0,  -- trading days between entry and today (advances daily)
+  -- Exit rule this position was PLANNED on. Stamped per row so promoting a new
+  -- rule never re-plans a live position (see lib/exit-rules.ts); pre-existing
+  -- rows default to v1 via scripts/migrate-add-exit-rule-columns.ts.
+  exit_rule          TEXT NOT NULL DEFAULT 'v1_atr2_3r',
+  partial_exit_date  TEXT,                 -- YYYY-MM-DD the scale-out rung filled
+  partial_exit_paise INTEGER,              -- price the rung filled at
   UNIQUE (symbol, exchange, entry_scan_date, side)
 );
 CREATE INDEX IF NOT EXISTS idx_open_positions_status ON open_positions(status);
@@ -275,6 +281,10 @@ CREATE TABLE IF NOT EXISTS paper_account (
 CREATE TABLE IF NOT EXISTS paper_trades (
   id                      INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id                 TEXT NOT NULL,
+  -- Which strategy opened this trade — the join key behind the per-strategy
+  -- stats on /strategies (see lib/strategies.ts). Adding a second live strategy
+  -- means tagging its openPaperTrade() calls with a new key, nothing more.
+  strategy                TEXT NOT NULL DEFAULT 'quality_trend_momentum_breakout',
   symbol                  TEXT NOT NULL,
   exchange                TEXT NOT NULL,
   entry_signal_scan_date  TEXT,                -- FK-ish → signals.scan_date; NULL for manual entries
@@ -295,11 +305,24 @@ CREATE TABLE IF NOT EXISTS paper_trades (
   exit_reason             TEXT,
   realized_pnl_paise      INTEGER,             -- populated on close
   bars_held               INTEGER NOT NULL DEFAULT 0,
+  -- Exit rule this trade was PLANNED on. Grandfathering is the point: a trade
+  -- opened under v1 runs to completion on v1 even after v2 is promoted, so
+  -- closed-trade stats blend both rules until the last v1 position closes.
+  exit_rule               TEXT NOT NULL DEFAULT 'v1_atr2_3r',
+  -- Scale-out ladder state. qty_open is NULL for rows written before partials
+  -- existed — NULL means "never scaled out" and lib/paper.ts coalesces it to
+  -- qty on read, a distinction a backfill to qty would have destroyed.
+  qty_open                INTEGER,             -- shares still running after any rung
+  partial_qty             INTEGER NOT NULL DEFAULT 0,  -- shares booked at the rung
+  partial_exit_date       TEXT,
+  partial_exit_paise      INTEGER,
+  partial_pnl_paise       INTEGER NOT NULL DEFAULT 0,  -- realized on the rung only
   UNIQUE (user_id, symbol, exchange, entry_date)
 );
 CREATE INDEX IF NOT EXISTS idx_paper_trades_open   ON paper_trades(user_id, status);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_symbol ON paper_trades(symbol, exchange);
 CREATE INDEX IF NOT EXISTS idx_paper_trades_entry  ON paper_trades(entry_date);
+CREATE INDEX IF NOT EXISTS idx_paper_trades_strategy ON paper_trades(user_id, strategy, status);
 
 -- Daily equity-curve snapshots. Written at the end-of-day scanner fire (last one
 -- of the trading day). Enables the account chart on /paper.

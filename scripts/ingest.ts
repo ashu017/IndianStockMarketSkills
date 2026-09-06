@@ -97,7 +97,7 @@ function writeHoldingsJson(
       symbol: h.symbol,
       exchange: h.exchange,
       isin: payload.meta[i]?.isin ?? null,
-      company_name: payload.meta[i]?.company_name ?? null,
+      company_name: payload.meta[i]?.company ?? null,
       qty: h.qty,
       avg_price: priceToRupees(h.avg_price),
       ltp: paiseToRupees(h.ltp),

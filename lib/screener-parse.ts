@@ -13,3 +13,4 @@ export function parseCroreToPaise(s: string | null | undefined): number | null {
   if (crore == null) return null;
   return Math.round(crore * 1e7 * 100);
 }
+

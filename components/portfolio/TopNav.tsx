@@ -2,7 +2,7 @@ import Link from "next/link";
 import { BarChart2 } from "lucide-react";
 
 interface Props {
-  currentPage: "overview" | "deepdive" | "paper";
+  currentPage: "overview" | "deepdive" | "paper" | "strategies";
   stockSymbol?: string;
   sessionLabel?: string;
 }
@@ -34,6 +34,12 @@ export default function TopNav({ currentPage, stockSymbol, sessionLabel }: Props
           >
             Paper trading
           </Link>
+          <Link
+            href="/strategies"
+            className={`hover:text-foreground transition-colors ${currentPage === "strategies" ? "text-foreground font-medium" : ""}`}
+          >
+            Strategies
+          </Link>
           {currentPage === "deepdive" && stockSymbol && (
             <>
               <span className="text-border select-none">/</span>
@@ -54,3 +60,4 @@ export default function TopNav({ currentPage, stockSymbol, sessionLabel }: Props
     </nav>
   );
 }
+

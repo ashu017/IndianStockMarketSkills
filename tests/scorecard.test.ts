@@ -22,6 +22,7 @@ test("appends and grades fundamentals_extra rows", () => {
     [{ metric_key: "sales_growth_3y", value_num: 20, unit: "%" }],
   );
   const extra = items.find((i) => i.label === "sales_growth_3y");
-  expect(extra?.value).toBe("20%");
+  // One decimal for percentages, matching formatCoreValue — see formatExtraValue.
+  expect(extra?.value).toBe("20.0%");
   expect(extra?.grade).toBe("Good");
 });

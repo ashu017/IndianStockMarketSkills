@@ -282,3 +282,4 @@ export default function VerdictCard({ symbol }: { symbol: string }) {
     </div>
   );
 }
+

@@ -350,3 +350,4 @@ export function isDuringMarketHours(now: Date = new Date()): boolean {
   return t >= 9 * 60 + 15 && t <= 15 * 60 + 30;
 }
 
+

@@ -14,3 +14,4 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   addVerdictColumns(db);
   console.log("migrated analysis table:", path);
 }
+

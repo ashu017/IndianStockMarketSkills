@@ -173,3 +173,4 @@ export async function getUniverseStock(symbol: string): Promise<UniverseStock | 
       .get(symbol) as UniverseStock | undefined) ?? null
   );
 }
+

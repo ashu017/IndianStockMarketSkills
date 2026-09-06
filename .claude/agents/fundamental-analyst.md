@@ -62,3 +62,4 @@ everything. This makes same-day re-runs near-instant and auto-retries prior fail
   won't join to a holding.
 - The AnalysisPayload shape is: `{ isin, asOfDate?, fundamentals:{pe,pb,roe,roce,debt_equity,sales_growth_3y,profit_growth_3y,div_yield,market_cap,promoter_holding,source,source_url,fetch_status}, extra:[{metric_key,value_num,unit}], peers:[{peer_symbol,peer_company,pe,roe,roce,sales_growth}], analysis:{narrative,verdict,confidence,model_version,prompt_version} }`. All numeric fields accept null. market_cap is in paise.
 - Never invent data. If Screener lacks a metric, leave it null.
+

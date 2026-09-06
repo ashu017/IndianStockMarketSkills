@@ -110,3 +110,4 @@ export default function SymbolSearch() {
     </div>
   );
 }
+

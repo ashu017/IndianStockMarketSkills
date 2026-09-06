@@ -4,6 +4,7 @@ import {
   ensureAccount,
   loadActivePaperTrades,
   summarize,
+  openQty,
 } from "@/lib/paper";
 
 /**
@@ -76,6 +77,13 @@ export async function GET(): Promise<NextResponse> {
         entry_date: t.entry_date,
         entry_rs: t.entry_paise / 100,
         qty: t.qty,
+        // Shares still held after any scale-out. The unrealized figures below are
+        // marked on this, not on qty — the booked shares are already in cash.
+        qty_open: openQty(t),
+        scaled_out: t.scaled_out,
+        partial_exit_date: t.partial_exit_date,
+        partial_exit_rs: t.partial_exit_paise !== null ? t.partial_exit_paise / 100 : null,
+        partial_pnl_rs: t.partial_pnl_paise / 100,
         capital_committed_rs: t.capital_committed_paise / 100,
         initial_stop_rs: t.initial_stop_paise / 100,
         current_stop_rs: t.current_stop_paise / 100,
@@ -120,3 +128,4 @@ export async function GET(): Promise<NextResponse> {
     db.close();
   }
 }
+

@@ -48,8 +48,14 @@ export const TECHNICAL_THRESHOLDS = {
   DONCHIAN_LOOKBACK: 20,
   VOL_SURGE_MIN: 1.5, // × 20-day avg
   ATR_PERIOD: 14,
-  STOP_ATR_MULT: 2, // stop = entry − 2×ATR14 (or 20-day low, whichever is higher)
-  TARGET_R_MULTIPLE: 3, // target = entry + 3×(entry − stop)
+  // Entry-plan geometry for the CURRENT exit rule (v2_scaleout, live since
+  // 2026-08-31). Tightened from 2×ATR/3R when the scale-out rule was promoted:
+  // the tighter stop shortens the horizon, and 5R is reachable because half the
+  // position is already banked at 1.5R so the runner isn't paying for the
+  // distance. Positions opened on the old plan keep their persisted 2×ATR/3R
+  // levels — see lib/exit-rules.ts.
+  STOP_ATR_MULT: 1.75, // stop = entry − 1.75×ATR14 (or 20-day low, whichever is higher)
+  TARGET_R_MULTIPLE: 5, // target = entry + 5×(entry − stop)
   MOMENTUM_LOOKBACK: 252,
   MOMENTUM_SKIP: 21,
 } as const;
@@ -529,3 +535,4 @@ export function evaluateFromDb(
     ohlc,
   });
 }
+
