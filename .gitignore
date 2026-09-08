@@ -63,3 +63,4 @@ next-env.d.ts
 
 # Cron output (scripts/cron/*.sh write here)
 logs/
+.gstack/

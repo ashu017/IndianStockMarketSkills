@@ -5,9 +5,11 @@ import { LIVE_MOMENTUM_PARAMS, V1_MOMENTUM_PARAMS } from "./backtest";
 import { MIN_DAYS_FOR_CAGR } from "./metrics";
 import {
   loadActivePaperTrades,
+  loadClosedPaperTrades,
   summarize,
   getAccount,
   DEFAULT_SIZING,
+  type ClosedTrade,
   type OpenTradeWithMark,
   type PaperSummary,
 } from "./paper";
@@ -378,6 +380,9 @@ export interface StrategyDetail {
   definition: StrategyDefinition;
   summary: PaperSummary | null;
   active_positions: OpenTradeWithMark[];
+  /** Most recent closed trades for this strategy, newest exit first. Capped —
+   *  this is the page's trade log, not the full history. */
+  closed_positions: ClosedTrade[];
   cagr_pct: number | null;
   // Strategy-scoped total return (not summary.total_return_pct, which is
   // whole-account — see the note in lib/paper.ts's summarize()). Use this as
@@ -397,6 +402,7 @@ export async function loadStrategyDetail(strategyId: string, userId = "local"): 
       definition: def,
       summary: null,
       active_positions: [],
+      closed_positions: [],
       cagr_pct: null,
       strategy_total_return_pct: null,
       account_created_at: acc?.created_at ?? null,
@@ -405,6 +411,7 @@ export async function loadStrategyDetail(strategyId: string, userId = "local"): 
 
   const summary = summarize(db, userId, def.id);
   const positions = loadActivePaperTrades(db, userId, def.id);
+  const closed = loadClosedPaperTrades(db, userId, def.id);
   const currentValue =
     acc.starting_cash_paise + (summary?.realized_pnl_paise ?? 0) + (summary?.unrealized_pnl_paise ?? 0);
   const strategyTotalReturnPct =
@@ -414,6 +421,7 @@ export async function loadStrategyDetail(strategyId: string, userId = "local"): 
     definition: def,
     summary,
     active_positions: positions,
+    closed_positions: closed,
     cagr_pct: computeCagrPct(acc.starting_cash_paise, currentValue, acc.created_at),
     strategy_total_return_pct: strategyTotalReturnPct,
     account_created_at: acc.created_at,

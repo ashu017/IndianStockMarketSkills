@@ -828,6 +828,50 @@ export function loadActivePaperTrades(
   });
 }
 
+// ---------- Fetch closed trades ----------
+
+export interface ClosedTrade extends PaperTradeRow {
+  /** Realized P&L as a multiple of the risk taken at entry, i.e. how many times
+   *  the initial stop distance the trade returned. NULL when the entry carried
+   *  no measurable risk (stop at or above entry), which would divide by zero or
+   *  invert the sign. Same definition summarize() averages into avg_r_multiple. */
+  r_multiple: number | null;
+}
+
+export function loadClosedPaperTrades(
+  db: Database.Database,
+  userId = DEFAULT_USER_ID,
+  strategy?: string,
+  limit = 50,
+): ClosedTrade[] {
+  const rows = (
+    strategy
+      ? db
+          .prepare(
+            `SELECT * FROM paper_trades WHERE user_id=? AND strategy=? AND status!='open'
+             ORDER BY exit_date DESC, id DESC LIMIT ?`,
+          )
+          .all(userId, strategy, limit)
+      : db
+          .prepare(
+            `SELECT * FROM paper_trades WHERE user_id=? AND status!='open'
+             ORDER BY exit_date DESC, id DESC LIMIT ?`,
+          )
+          .all(userId, limit)
+  ) as PaperTradeRow[];
+  return rows.map((r) => {
+    const perShareRisk = r.entry_paise - r.initial_stop_paise;
+    const totalRisk = perShareRisk * r.qty;
+    return {
+      ...r,
+      r_multiple:
+        perShareRisk > 0 && r.qty > 0 && r.realized_pnl_paise !== null
+          ? r.realized_pnl_paise / totalRisk
+          : null,
+    };
+  });
+}
+
 // ---------- Manual close ----------
 
 export function closePaperTradeManual(
