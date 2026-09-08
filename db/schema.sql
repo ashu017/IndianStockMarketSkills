@@ -204,6 +204,34 @@ CREATE TABLE IF NOT EXISTS screener_screen_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_screen_run ON screener_screen_cache(query_hash, run_date);
 
+-- NSE bulk-deal disclosures (block trades >0.5% of listed equity), fetched daily by
+-- scripts/cron/refresh-bulk-deals.sh. `is_institution` is derived at ingest time by
+-- regex over client_name (lib/bulk-deals-csv.ts), not published by NSE.
+--
+-- `price` is decimal rupees as printed in the NSE CSV, NOT paise — the exception to
+-- this file's integer-paise convention. lib/bulk-deal-fifo.ts only ever uses it as a
+-- ratio (price / buy_price), so the unit never leaks into stored money values.
+--
+-- Uniqueness spans every value-bearing column because NSE republishes overlapping
+-- windows on each fetch and gives no deal ID. quantity and price are NOT NULL so the
+-- ON CONFLICT can actually fire: SQLite treats NULLs as DISTINCT in a UNIQUE index, so
+-- a NULL-bearing row would duplicate on every re-fetch. The ingest drops such rows
+-- before insert (they're unusable downstream anyway), making re-runs truly idempotent.
+CREATE TABLE IF NOT EXISTS bulk_deals (
+  deal_date      TEXT NOT NULL,               -- YYYY-MM-DD (IST session date)
+  symbol         TEXT NOT NULL,               -- NSE tradingsymbol
+  security_name  TEXT,
+  client_name    TEXT NOT NULL,               -- buyer/seller as disclosed
+  side           TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+  quantity       INTEGER NOT NULL,            -- shares
+  price          REAL NOT NULL,               -- rupees (see note above)
+  is_institution INTEGER NOT NULL DEFAULT 0,  -- 1 if client_name matches the institution regex
+  fetched_at     TEXT NOT NULL,               -- ISO-8601 UTC
+  UNIQUE (deal_date, symbol, client_name, side, quantity, price)
+);
+CREATE INDEX IF NOT EXISTS idx_bulk_deals_symbol ON bulk_deals(symbol, deal_date);
+CREATE INDEX IF NOT EXISTS idx_bulk_deals_inst   ON bulk_deals(is_institution, deal_date);
+
 -- Signals emitted by scripts/scan-nifty100-signals.ts. Dedup key is (symbol,scan_date):
 -- a stock firing on the same scan date won't re-insert, but multiple scans across
 -- different days append independent rows. This lets us keep a trade log without
