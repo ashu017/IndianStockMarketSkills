@@ -2,7 +2,7 @@ import "server-only";
 import { getDb } from "./db/connection";
 import { QUALITY_THRESHOLDS, TECHNICAL_THRESHOLDS } from "./verdict";
 import { LIVE_MOMENTUM_PARAMS, V1_MOMENTUM_PARAMS } from "./backtest";
-import { MIN_DAYS_FOR_CAGR } from "./metrics";
+import { accountAgeCagrPct } from "./metrics";
 import {
   loadActivePaperTrades,
   loadClosedPaperTrades,
@@ -295,35 +295,13 @@ export interface StrategyCardStats {
   unrealized_pnl_paise: number;
 }
 
-// Annualizing a short-lived return compounds noise into a huge, misleading
-// number — e.g. a real +5% over 23 days becomes a reported "+115% CAGR",
-// which is technically the correct formula but wildly overstates confidence
-// off a handful of trades. Require a full quarter of history before
-// extrapolating to an annualized figure; below that, show total return
-// instead (see StrategyCardStats.cagr_pct / total_return_pct usage in the UI).
-// The threshold is imported from lib/metrics.ts (not redeclared here) so this
-// account-age CAGR and the equity-curve CAGR in the backtest engines can't
-// drift apart.
-
-/**
- * CAGR since the account's inception date, using the strategy-scoped
- * realized+unrealized P&L on top of the account's starting capital as a
- * proxy for "what this strategy's slice of the book is worth today".
- * Returns null before MIN_DAYS_FOR_CAGR has elapsed — callers should fall
- * back to displaying total_return_pct (non-annualized) until then.
- */
-function computeCagrPct(
-  startingCashPaise: number,
-  currentValuePaise: number,
-  createdAtIso: string,
-): number | null {
-  const ageMs = Date.now() - new Date(createdAtIso).getTime();
-  const ageDays = ageMs / 86_400_000;
-  if (ageDays < MIN_DAYS_FOR_CAGR || startingCashPaise <= 0 || currentValuePaise <= 0) return null;
-  const years = ageDays / 365.25;
-  const growth = currentValuePaise / startingCashPaise;
-  return (Math.pow(growth, 1 / years) - 1) * 100;
-}
+// CAGR since the account's inception date, using the strategy-scoped
+// realized+unrealized P&L on top of the account's starting capital as a proxy
+// for "what this strategy's slice of the book is worth today". The function and
+// its MIN_DAYS_FOR_CAGR floor live in lib/metrics.ts so this account-age CAGR,
+// the equity-curve CAGR in the backtest engines, and the browser's live
+// recomputation in LiveStrategyDetail can't drift apart. Null before the floor —
+// callers fall back to displaying total_return_pct (non-annualized).
 
 /**
  * Card-level stats for every registered strategy. Live strategies pull real
@@ -368,7 +346,7 @@ export async function listStrategyCards(userId = "local"): Promise<StrategyCardS
         acc.starting_cash_paise > 0
           ? ((currentValue - acc.starting_cash_paise) / acc.starting_cash_paise) * 100
           : 0,
-      cagr_pct: computeCagrPct(acc.starting_cash_paise, currentValue, acc.created_at),
+      cagr_pct: accountAgeCagrPct(acc.starting_cash_paise, currentValue, acc.created_at),
       win_rate_pct: sum?.win_rate_pct ?? null,
       realized_pnl_paise: realized,
       unrealized_pnl_paise: unrealized,
@@ -422,7 +400,7 @@ export async function loadStrategyDetail(strategyId: string, userId = "local"): 
     summary,
     active_positions: positions,
     closed_positions: closed,
-    cagr_pct: computeCagrPct(acc.starting_cash_paise, currentValue, acc.created_at),
+    cagr_pct: accountAgeCagrPct(acc.starting_cash_paise, currentValue, acc.created_at),
     strategy_total_return_pct: strategyTotalReturnPct,
     account_created_at: acc.created_at,
   };

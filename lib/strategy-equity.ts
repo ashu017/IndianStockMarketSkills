@@ -1,6 +1,8 @@
 import "server-only";
 import { getDb } from "./db/connection";
 import { getAccount } from "./paper";
+import { PROJECTION_DAYS, projectEquity } from "./equity-projection";
+import type { EquityPoint } from "./metrics";
 
 /**
  * Reconstructs a strategy-scoped daily portfolio-value series from
@@ -17,10 +19,7 @@ import { getAccount } from "./paper";
  * model exists anywhere in this codebase to do better).
  */
 
-export interface EquityPoint {
-  date: string;
-  value_rupees: number;
-}
+export type { EquityPoint };
 
 export interface StrategyEquityHistory {
   history: EquityPoint[]; // actual, chronological
@@ -37,9 +36,13 @@ interface TradeRow {
   entry_paise: number;
   exit_date: string | null;
   realized_pnl_paise: number | null;
+  /** Scale-out fields. A still-open trade that has banked a rung holds that
+   *  profit in partial_pnl_paise and carries only qty_open shares at risk, so
+   *  valuing it needs all three (see lib/paper.ts's header note). */
+  qty_open: number | null;
+  partial_exit_date: string | null;
+  partial_pnl_paise: number;
 }
-
-const PROJECTION_DAYS = 90;
 
 export async function loadStrategyEquityHistory(
   strategyId: string,
@@ -51,7 +54,8 @@ export async function loadStrategyEquityHistory(
 
   const trades = db
     .prepare(
-      `SELECT symbol, exchange, entry_date, qty, entry_paise, exit_date, realized_pnl_paise
+      `SELECT symbol, exchange, entry_date, qty, entry_paise, exit_date, realized_pnl_paise,
+              qty_open, partial_exit_date, partial_pnl_paise
        FROM paper_trades WHERE user_id=? AND strategy=? ORDER BY entry_date ASC`,
     )
     .all(userId, strategyId) as TradeRow[];
@@ -127,44 +131,37 @@ export async function loadStrategyEquityHistory(
       if (t.entry_date > d) continue; // not yet opened
       const closed = t.exit_date !== null && t.exit_date <= d;
       if (closed) {
+        // realized_pnl_paise on a closed trade already includes whatever rung it
+        // booked on the way out (lib/paper.ts sums both), so there is no partial
+        // term to add here.
         cumulativeRealizedPaise += t.realized_pnl_paise ?? 0;
-      } else {
-        const key = `${t.symbol}::${t.exchange}`;
-        const close = lastKnownClose(key, d);
-        if (close === null) {
-          missingPriceDays++;
-          continue;
-        }
-        unrealizedPaise += (close - t.entry_paise) * t.qty;
+        continue;
       }
+
+      // Still open as of d. A rung booked on or before d is banked cash from that
+      // day forward and only the remaining shares are still marked — valuing the
+      // original size would count the sold half twice, once as profit and again
+      // as an open position.
+      const bookedARung = t.partial_exit_date !== null && t.partial_exit_date <= d;
+      if (bookedARung) cumulativeRealizedPaise += t.partial_pnl_paise;
+      const heldOn = bookedARung ? (t.qty_open ?? t.qty) : t.qty;
+
+      const key = `${t.symbol}::${t.exchange}`;
+      const close = lastKnownClose(key, d);
+      if (close === null) {
+        missingPriceDays++;
+        continue;
+      }
+      unrealizedPaise += (close - t.entry_paise) * heldOn;
     }
     const valuePaise = acc.starting_cash_paise + cumulativeRealizedPaise + unrealizedPaise;
     history.push({ date: d, value_rupees: valuePaise / 100 });
   }
 
-  // Naive projection: continue at the trailing average daily growth rate
-  // implied by the reconstructed curve (first point -> last point), simple
-  // compounding forward. This is an extrapolation, not a model — no
-  // volatility, no mean reversion, no regime awareness. Explicitly labeled
-  // as such in the UI and in caveats below.
-  const projection: EquityPoint[] = [];
-  if (history.length >= 2) {
-    const first = history[0].value_rupees;
-    const last = history[history.length - 1].value_rupees;
-    const spanDays = Math.max(
-      1,
-      (new Date(history[history.length - 1].date).getTime() - new Date(history[0].date).getTime()) / 86_400_000,
-    );
-    const dailyRate = first > 0 && last > 0 ? Math.pow(last / first, 1 / spanDays) - 1 : 0;
-    let cursor = last;
-    const lastDate = new Date(history[history.length - 1].date);
-    projection.push({ date: history[history.length - 1].date, value_rupees: cursor }); // connects the two lines
-    for (let i = 1; i <= PROJECTION_DAYS; i++) {
-      cursor = cursor * (1 + dailyRate);
-      const d = new Date(lastDate.getTime() + i * 86_400_000);
-      projection.push({ date: d.toISOString().slice(0, 10), value_rupees: cursor });
-    }
-  }
+  // Naive extrapolation, not a model — see lib/equity-projection.ts. Shared with
+  // the client so that when LiveStrategyDetail re-marks the last actual point at
+  // live prices it can redraw the dashed line from the same math.
+  const projection = projectEquity(history, PROJECTION_DAYS);
 
   const caveats = [
     "Value is reconstructed from this strategy's own trades against the account's starting capital — not a separately-funded account (see the shared-cash-pool note on the stat tiles above).",

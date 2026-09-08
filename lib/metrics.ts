@@ -39,6 +39,34 @@ export function toSeries(points: EquityPoint[]): SeriesPoint[] {
  *  account-age CAGR so the app has exactly one such threshold. */
 export const MIN_DAYS_FOR_CAGR = 90;
 
+/**
+ * CAGR measured against an account's age rather than an equity curve's span —
+ * "starting capital grew to this over this many calendar days". Used for a
+ * paper strategy's headline figure, where there is no per-strategy curve to
+ * measure (see the shared-cash-pool note in lib/paper.ts's summarize()); the
+ * curve-based counterpart is computeEquityMetrics().cagr_pct below.
+ *
+ * Returns null before MIN_DAYS_FOR_CAGR has elapsed, because annualizing a
+ * short-lived return compounds noise into a huge, confident-looking number — a
+ * real +5% over 23 days reads as "+115% CAGR". Callers must fall back to
+ * showing total return (non-annualized) until then.
+ *
+ * Lives here rather than in lib/strategies.ts so the browser can recompute it
+ * when live prices move the current value, without importing a server-only
+ * module.
+ */
+export function accountAgeCagrPct(
+  startingCashPaise: number,
+  currentValuePaise: number,
+  createdAtIso: string,
+  now = Date.now(),
+): number | null {
+  const ageDays = (now - new Date(createdAtIso).getTime()) / 86_400_000;
+  if (ageDays < MIN_DAYS_FOR_CAGR || startingCashPaise <= 0 || currentValuePaise <= 0) return null;
+  const years = ageDays / 365.25;
+  return (Math.pow(currentValuePaise / startingCashPaise, 1 / years) - 1) * 100;
+}
+
 /** Indian equity trading days per year. Pass an explicit override for any
  *  non-daily cadence — a weekly-rebalance curve needs 52, and annualizing a
  *  weekly series with 252 silently inflates Sharpe by ~2.2x. */

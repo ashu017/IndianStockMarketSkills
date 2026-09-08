@@ -3,6 +3,8 @@
 import { RefreshCw } from "lucide-react";
 import type { StrategyDetail } from "@/lib/strategies";
 import type { StrategyEquityHistory } from "@/lib/strategy-equity";
+import { projectEquity } from "@/lib/equity-projection";
+import { accountAgeCagrPct } from "@/lib/metrics";
 import { fmtINR, fmtINRSigned, fmtPct } from "./utils";
 import StrategyEquityChart from "./StrategyEquityChart";
 import StrategyOverview from "./StrategyOverview";
@@ -63,6 +65,52 @@ function humanReason(reason: string | null, status: string): string {
   return (reason ?? status).replace(/_/g, " ");
 }
 
+/**
+ * Corrects the equity curve's last point to the prices the rest of the page is
+ * showing, and redraws the projection from it.
+ *
+ * WHY: the server builds the curve from ohlc_daily closes, and today's bar does
+ * not exist until the evening bhavcopy lands — so the line ended on yesterday's
+ * close while the Unrealized P&L tile directly above it moved with the market.
+ * This applies the same identity strategy-equity.ts uses for every other day
+ * (starting capital + banked P&L + open positions marked), with today's mark
+ * being the live one, so the endpoint continues the curve rather than measuring
+ * something different.
+ *
+ * @param pnlPaise Banked P&L plus unrealized at current marks, strategy-scoped.
+ * @param asOf Fetch time of the live prices, or null when none were available —
+ *   only affects how the caveat is worded, never the number.
+ */
+function markEquityAtLivePrices(
+  equity: StrategyEquityHistory | null,
+  pnlPaise: number,
+  asOf: string | null,
+): StrategyEquityHistory | null {
+  if (!equity || equity.history.length === 0) return equity;
+
+  const valueRupees = equity.starting_value_rupees + pnlPaise / 100;
+  // loadStrategyEquityHistory always extends its calendar to today, so the last
+  // point IS today: this corrects that point rather than appending a new one.
+  const history = [
+    ...equity.history.slice(0, -1),
+    { ...equity.history[equity.history.length - 1], value_rupees: valueRupees },
+  ];
+
+  return {
+    ...equity,
+    history,
+    // Redraw the dashed line too — one still hanging off the stale value would
+    // visibly fail to meet the solid line it is meant to continue.
+    projection: projectEquity(history),
+    caveats: [
+      ...equity.caveats,
+      asOf
+        ? `Today's point is marked at live prices (as of ${istTime(asOf)} IST); every earlier point uses that day's official close.`
+        : "Today's point is marked at the most recent price available; every earlier point uses that day's official close.",
+    ],
+  };
+}
+
 /** StrategyDetail with the summary known to be present — the caller only renders
  *  this view for a live strategy that has a paper account, so narrowing it here
  *  beats a null check on every tile. */
@@ -82,8 +130,9 @@ export default function LiveStrategyDetail({
     summary,
     active_positions,
     closed_positions,
+    // Only a fallback now: both figures are recomputed below at live marks, so
+    // the tile agrees with the chart endpoint and the P&L tiles beside it.
     cagr_pct,
-    strategy_total_return_pct,
   } = detail;
 
   // Every symbol shown on the page — open positions and the closed log both.
@@ -118,6 +167,31 @@ export default function LiveStrategyDetail({
   });
   const unrealizedTotal = marked.reduce((s, m) => s + (m.unrealized ?? 0), 0);
 
+  // ONE expression for "what this strategy is worth right now", which every
+  // derived figure below hangs off: the headline return tile, the chart's last
+  // point, and the P&L tiles. Same identity the server uses per day in
+  // lib/strategies.ts and lib/strategy-equity.ts — starting capital + banked P&L
+  // + open positions marked — with today's mark being the live one.
+  const livePnlPaise = summary.realized_pnl_paise + unrealizedTotal;
+  const liveValuePaise = summary.starting_cash_paise + livePnlPaise;
+
+  const liveTotalReturnPct =
+    summary.starting_cash_paise > 0 ? (livePnlPaise / summary.starting_cash_paise) * 100 : null;
+  // Null until the account is 90 days old (accountAgeCagrPct's floor), which is
+  // why the tile falls back to total return. Date.now() differs by milliseconds
+  // between the server render and hydration; at two decimals that is invisible,
+  // and total return — what actually shows for a young account — has no time term
+  // at all.
+  const liveCagrPct = detail.account_created_at
+    ? accountAgeCagrPct(summary.starting_cash_paise, liveValuePaise, detail.account_created_at)
+    : cagr_pct;
+
+  // The chart's last point. Not wrapped in useMemo: a handful of array operations
+  // over at most a few hundred points, and React Compiler memoizes it
+  // automatically — a manual memo here only defeated the compiler
+  // (react-hooks/preserve-manual-memoization).
+  const liveEquity = markEquityAtLivePrices(equity, livePnlPaise, state === "ok" && asOf ? asOf : null);
+
   return (
     <div className="max-w-[1200px] mx-auto px-4 py-6 space-y-6">
       <div>
@@ -130,10 +204,10 @@ export default function LiveStrategyDetail({
           P&L figures ARE scoped to this strategy's own trades. */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         <StatTile
-          label={cagr_pct === null ? "Total return" : "CAGR"}
-          value={fmtPct(cagr_pct ?? strategy_total_return_pct ?? 0)}
-          valueClass={gainClass(cagr_pct ?? strategy_total_return_pct)}
-          sub={cagr_pct === null ? "needs 90+ days for CAGR" : "annualized"}
+          label={liveCagrPct === null ? "Total return" : "CAGR"}
+          value={fmtPct(liveCagrPct ?? liveTotalReturnPct ?? 0)}
+          valueClass={gainClass(liveCagrPct ?? liveTotalReturnPct)}
+          sub={liveCagrPct === null ? "needs 90+ days for CAGR" : "annualized"}
         />
         <StatTile
           label="Active positions"
@@ -177,18 +251,10 @@ export default function LiveStrategyDetail({
         />
       </div>
 
-      {equity && (
-        <StrategyEquityChart
-          history={equity.history}
-          projection={equity.projection}
-          startingValueRupees={equity.starting_value_rupees}
-          caveats={equity.caveats}
-        />
-      )}
-
-      {/* Freshness line. Says which prices the tables above and below are using —
-          a page that silently mixes live and end-of-day marks is worse than one
-          that is openly stale. */}
+      {/* Freshness line. Sits between the tiles and everything it governs — the
+          chart's last point and both tables are marked at these prices. A page
+          that silently mixes live and end-of-day marks is worse than one that is
+          openly stale. */}
       <div className="flex items-center gap-2 text-xs text-muted-foreground">
         {state === "loading" && <span>Fetching live prices from NSE…</span>}
         {state === "ok" && asOf && (
@@ -214,6 +280,15 @@ export default function LiveStrategyDetail({
           Refresh
         </button>
       </div>
+
+      {liveEquity && (
+        <StrategyEquityChart
+          history={liveEquity.history}
+          projection={liveEquity.projection}
+          startingValueRupees={liveEquity.starting_value_rupees}
+          caveats={liveEquity.caveats}
+        />
+      )}
 
       <section>
         <h2 className="text-sm font-medium mb-2">Active positions ({active_positions.length})</h2>
