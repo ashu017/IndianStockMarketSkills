@@ -12,38 +12,9 @@
 # Monday run would re-cover any weekend anyway.
 #
 set -uo pipefail
+# shellcheck source=scripts/cron/_lib.sh
+source "$(dirname "$0")/_lib.sh"
 
-REPO="/local/home/ashunsah/workplace/IndianStockMarketSkills"
-LOG_DIR="$REPO/logs"
-LOG="$LOG_DIR/refresh-bulk-deals.log"
-LOCK="/tmp/refresh-bulk-deals.lock"
-
-# Cron gets a near-empty PATH, and the system node is 18 (ABI 108) which cannot
-# load better-sqlite3's binary (built for ABI 127) — this prepend is
-# load-bearing, not tidiness.
-export PATH="/home/ashunsah/.local/node/bin:$PATH"
-export PORTFOLIO_DB_PATH="$REPO/data/portfolio.db"
-
-mkdir -p "$LOG_DIR"
-
-# -n: if a previous run is somehow still going, skip rather than pile up a
-# second writer on the same SQLite file.
-exec 9>"$LOCK"
-if ! flock -n 9; then
-  echo "[$(date -u +%FT%TZ)] SKIPPED: previous run still holding $LOCK" >>"$LOG"
-  exit 0
-fi
-
-cd "$REPO" || exit 1
-
-{
-  echo "=== [$(date -u +%FT%TZ)] refresh-bulk-deals start ==="
-  npx tsx scripts/refresh-bulk-deals.ts 2>&1
-  status=$?
-  echo "=== exit=$status ==="
-} >>"$LOG" 2>&1
-
-# Keep the log bounded — this runs every weekday forever.
-if [ "$(wc -l <"$LOG")" -gt 2000 ]; then
-  tail -n 1000 "$LOG" >"$LOG.tmp" && mv "$LOG.tmp" "$LOG"
-fi
+cron_init refresh-bulk-deals
+cron_step "refresh" npx tsx scripts/refresh-bulk-deals.ts
+cron_finish
