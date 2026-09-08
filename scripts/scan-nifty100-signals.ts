@@ -21,7 +21,15 @@ import {
   loadActivePaperTrades,
   snapshotAccountHistory,
   summarize as summarizePaper,
+  openQty,
+  DEFAULT_STRATEGY,
 } from "@/lib/paper";
+import {
+  demeanBySector,
+  isSectorDemeanEnabled,
+} from "@/lib/momentum-normalize";
+import { CURRENT_EXIT_RULE, EXIT_RULES, describeExitRule } from "@/lib/exit-rules";
+import { loadScreenUniverse } from "@/lib/screen-universe";
 
 /**
  * The Nifty 100 / Nifty 200 signal scanner.
@@ -41,7 +49,7 @@ import {
  *
  * Env:
  *   PORTFOLIO_DB_PATH=./data/portfolio.db
- *   INDEX_NAME="NIFTY 200"    — scan universe (default; ignored when USE_SCREENER_SCREEN=1)
+ *   INDEX_NAME="NIFTY 500"    — scan universe (default; ignored when USE_SCREENER_SCREEN=1)
  *   USE_SCREENER_SCREEN=1     — replace local quality gate with the latest cached
  *                                Screener screen (screener_screen_cache table).
  *                                The scanner treats every symbol in the latest run as
@@ -52,6 +60,9 @@ import {
  *   FORCE_REGIME=bull|bear    — override market-regime detection
  *   MOM_TOPN=30               — how many top-momentum stocks form the pool
  *   MAX_SIGNALS=5             — cap signals per scan (highest momentum first)
+ *   SECTOR_DEMEAN=1|0         — sector-demean momentum before top-N ranking so
+ *                               a single hot sector cannot flood the pool
+ *                               (default ON; set to "0" to disable for A/B).
  */
 
 interface UniverseRow {
@@ -178,17 +189,9 @@ function main(): void {
     // Join to index_universe for OHLC + sector context. A stock in Screener's
     // list that isn't in any tracked index is skipped (we have no OHLC for it).
     // The AD-HOC entries created by refresh-single-stock still count.
-    const placeholders = screenSymbols.map(() => "?").join(",");
-    universe = screenSymbols.length === 0
-      ? []
-      : (db
-          .prepare(
-            `SELECT DISTINCT symbol, exchange, isin, instrument_token, sector
-             FROM index_universe
-             WHERE symbol IN (${placeholders})
-             ORDER BY symbol`,
-          )
-          .all(...screenSymbols.map((s) => s.symbol)) as UniverseRow[]);
+    // Extracted to lib/ so the one-row-per-index-membership de-duplication is
+    // covered by tests/screen-universe.test.ts — see that module for why.
+    universe = loadScreenUniverse(db, screenSymbols.map((s) => s.symbol));
   } else {
     universe = db
       .prepare(
@@ -246,9 +249,17 @@ function main(): void {
     candidates.push({ u, verdict, momentum });
   }
 
+  // Sector-demean momentum before ranking so one hot sector (Defence, PSU
+  // banks, etc.) cannot flood the top-N. Sectors with < 3 members are left
+  // alone — the mean over 1-2 names would zero them out spuriously. Disabled
+  // by SECTOR_DEMEAN=0 for A/B testing.
+  const demeanEnabled = isSectorDemeanEnabled(process.env);
+  const demean = demeanBySector(candidates, demeanEnabled);
+  const rankedCandidates = demean.candidates;
+
   // Rank by momentum desc, take top N.
-  candidates.sort((a, b) => (b.momentum ?? -Infinity) - (a.momentum ?? -Infinity));
-  const topN = candidates.slice(0, momTopN);
+  rankedCandidates.sort((a, b) => (b.momentum ?? -Infinity) - (a.momentum ?? -Infinity));
+  const topN = rankedCandidates.slice(0, momTopN);
   const momRank = new Map<string, number>();
   topN.forEach((c, i) => momRank.set(c.u.symbol, i + 1));
 
@@ -358,6 +369,7 @@ function main(): void {
         target_paise: s.target_paise, atr14_paise: s.atr14_paise,
       });
       const r = openPaperTrade(db, {
+        strategy: DEFAULT_STRATEGY,
         symbol: s.symbol,
         exchange: s.exchange,
         entry_signal_scan_date: s.scan_date,
@@ -402,6 +414,12 @@ function main(): void {
     entry_date: p.entry_date,
     entry_paise: p.entry_paise,
     qty: p.qty,
+    // Shares still held after any scale-out. Differs from qty on a part-booked
+    // v2 position, and the unrealized figures are marked on this, not qty.
+    qty_open: openQty(p),
+    scaled_out: p.scaled_out,
+    partial_exit_paise: p.partial_exit_paise,
+    partial_pnl_paise: p.partial_pnl_paise,
     capital_committed_paise: p.capital_committed_paise,
     current_stop_paise: p.current_stop_paise,
     target_paise: p.target_paise,
@@ -445,8 +463,20 @@ function main(): void {
         universe: universe.length,
         quality_survivors: candidates.length,
         momentum_top_n: topN.length,
+        sector_demean: demean.stats,
         signals_emitted: finalSignals.length,
         latest_bar_dates: [...latestBarDates],
+        // The rule NEW entries open on, so the Telegram digest can state how a
+        // signal will be managed instead of restating the recipe in Python and
+        // going stale the next time the rule is versioned. Positions already
+        // open may be on an older rule — active_positions[] carries the state
+        // each one is actually in.
+        exit_rule: {
+          id: CURRENT_EXIT_RULE,
+          description: describeExitRule(EXIT_RULES[CURRENT_EXIT_RULE]),
+          stop_atr_mult: TECHNICAL_THRESHOLDS.STOP_ATR_MULT,
+          target_r_multiple: TECHNICAL_THRESHOLDS.TARGET_R_MULTIPLE,
+        },
         signals: finalSignals.map((s) => ({
           symbol: s.symbol,
           entry_rs: s.entry_paise / 100,
@@ -478,6 +508,10 @@ function main(): void {
           entry_date: p.entry_date,
           entry_rs: p.entry_paise / 100,
           qty: p.qty,
+          qty_open: p.qty_open,
+          scaled_out: p.scaled_out,
+          partial_exit_rs: p.partial_exit_paise !== null ? p.partial_exit_paise / 100 : null,
+          partial_pnl_rs: p.partial_pnl_paise / 100,
           capital_committed_rs: p.capital_committed_paise / 100,
           stop_rs: p.current_stop_paise / 100,
           target_rs: p.target_paise / 100,
@@ -502,3 +536,4 @@ try {
   );
   process.exit(1);
 }
+

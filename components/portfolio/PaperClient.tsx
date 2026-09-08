@@ -24,6 +24,12 @@ interface OpenTrade {
   entry_date: string;
   entry_rs: number;
   qty: number;
+  /** Shares still held after any scale-out — what the unrealized figures mark on. */
+  qty_open: number;
+  scaled_out: boolean;
+  partial_exit_date: string | null;
+  partial_exit_rs: number | null;
+  partial_pnl_rs: number;
   capital_committed_rs: number;
   initial_stop_rs: number;
   current_stop_rs: number;
@@ -273,8 +279,25 @@ export default function PaperClient() {
                         BE
                       </span>
                     )}
+                    {t.scaled_out && (
+                      <span
+                        className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200"
+                        title={
+                          t.partial_exit_rs !== null
+                            ? `${t.qty - t.qty_open} of ${t.qty} shares booked at ${inr(t.partial_exit_rs, 2)} on ${t.partial_exit_date}, ${inrSigned(t.partial_pnl_rs)} realized`
+                            : "Part of this position has been booked"
+                        }
+                      >
+                        ½ booked
+                      </span>
+                    )}
                   </td>
-                  <td className="px-3 py-2 text-right tabular-nums">{t.qty}</td>
+                  {/* Shares still held — the booked half is already back in cash
+                      and out of the unrealized column. */}
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {t.qty_open}
+                    {t.scaled_out && <span className="ml-1 text-xs text-muted-foreground">of {t.qty}</span>}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">{inr(t.entry_rs, 2)}</td>
                   <td className="px-3 py-2 text-right tabular-nums">{t.latest_close_rs !== null ? inr(t.latest_close_rs, 2) : "—"}</td>
                   <td className={`px-3 py-2 text-right tabular-nums ${gainClass(t.unrealized_pnl_rs)}`}>
@@ -367,3 +390,4 @@ export default function PaperClient() {
     </div>
   );
 }
+

@@ -9,3 +9,4 @@ const db = new Database(path);
 db.pragma("foreign_keys = ON");
 db.exec(readFileSync("db/schema.sql", "utf8"));
 console.log("migrated", path);
+

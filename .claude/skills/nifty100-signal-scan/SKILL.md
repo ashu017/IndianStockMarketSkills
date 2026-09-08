@@ -81,20 +81,41 @@ Working directory: `/home/ashunsah/workplace/IndianStockMarketSkills`
    Universe 100 · Quality pass <N> · Top-momentum <30> · Signals <K>
 
    [BUY] SYMBOL  (mom rank R/30)
-     Entry ≤ Rs<entry>   Target Rs<target> (+X.X%)   Stop Rs<stop> (−Y.Y%)   R:R 3.0
+     Entry ≤ Rs<entry>   Target Rs<target> (+X.X%)   Stop Rs<stop> (−Y.Y%)   R:R 1:<rr>
      Q: ROCE X% · ROE Y% · D/E Z · sales A% · profit B% · promoter C%
      T: px>200D · 50D>200D · 20D breakout · vol N.Nx · mom 12-1: S
 
    [BUY] SYMBOL  ...
 
+   Managed: <exit_rule.description>
+
+   [Active positions]
+   SYMBOL · entered <date> at Rs<entry> · <qty_open> of <qty> sh · now Rs<close> (+X%)
+     · stop Rs<stop> · <bars_held>d held · part booked at Rs<partial_exit_rs> (+RsN realized), runner stopped at entry
+
    Educational only — not SEBI-registered investment advice. At your own risk.
    ```
+
+   Derive every number from the JSON — do NOT hardcode the recipe:
+   - `R:R` is `reward_pct / risk_pct`, not a constant. The stop/target geometry
+     is versioned (it moved from 2×ATR/3R to 1.75×ATR/5R on 2026-08-31), so a
+     literal like `R:R 3.0` describes trades the engine no longer places.
+   - `Managed:` is `exit_rule.description` verbatim from the scanner. It states
+     the rule NEW entries open on.
+   - In `[Active positions]`, quote `qty_open` (shares still held), and show the
+     `of <qty>` suffix only when `scaled_out` is true. Append `part booked …`
+     when `scaled_out`; use the plain `stop moved to breakeven` wording only for
+     a position at breakeven that has booked nothing — those are grandfathered
+     rows still on the older rule, where breakeven at 1R was automatic.
 
    Special cases:
    - If `regime.bull=false`, replace the signal blocks with a single line:
      `Bear regime — long signals paused. No trades this scan.`
    - If `regime.bull=true` and `signals_emitted=0`, use:
      `No stocks met all filters this scan.`
+   - Omit `[Active positions]` when `active_positions` is empty.
+   - If `position_update.scaled_out > 0`, add a `[Part booked since last scan]`
+     section. Do NOT count these as closes — the runner is still open.
    - Include the disclaimer regardless.
 
 7. **DRY_RUN handling:**
@@ -126,3 +147,4 @@ Full recipe is documented in `docs/superpowers/plans/2026-07-22-nifty100-strateg
 (if that file exists) or the header comment of `scripts/scan-nifty100-signals.ts`.
 Do not tune thresholds in this skill — thresholds are code-defined so the recipe
 is reproducible across scans and testable.
+

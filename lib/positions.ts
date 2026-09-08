@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { CURRENT_EXIT_RULE, resolveExitRule, type ExitRule, type ExitRuleId } from "./exit-rules";
 
 /**
  * Simulated-position tracking. Every BUY signal the scanner emits opens a
@@ -6,14 +7,18 @@ import type Database from "better-sqlite3";
  * and update state accordingly. The Telegram digest lists Active positions so
  * the user can trace each trade's fate over time.
  *
- * Rules (mirror the strategy exit spec):
- *   Stop hit         — today's LOW  ≤ current_stop_paise → status='stopped', exit at current_stop
- *   Target hit       — today's HIGH ≥ target_paise       → status='target_hit', exit at target
- *   Move to breakeven — at +1R unrealized (max(close, high) since entry),
- *                       current_stop is raised to entry_paise (never lowered)
- *   Trail at +2R     — current_stop advances to the trailing 20-day low
- *                       (only above breakeven; never lowered)
- *   Time exit        — 60 trading days since entry → status='time_exit', exit at latest close
+ * This tracker is UNSIZED — one row per signal, no share count and no cash. The
+ * sized twin is lib/paper.ts. Both read their exit rules from lib/exit-rules.ts
+ * so the digest and the paper account can't describe different trades; the only
+ * behavioural difference is that a scale-out rung here records the fact and the
+ * price of the partial but has no quantity to split, so the position keeps
+ * running (with the stop at entry) until stop, target or the time cap.
+ *
+ * Rules resolve PER ROW from open_positions.exit_rule, stamped at open — a rule
+ * promotion must not re-plan positions already running on the old one. Ordering
+ * within a bar matches lib/paper.ts's replayTrade(): stop, then rungs, then the
+ * post-rung breakeven re-check, then target, then breakeven/trail ratchets, then
+ * the time cap.
  */
 
 export interface OpenPositionRow {
@@ -32,6 +37,9 @@ export interface OpenPositionRow {
   exit_paise: number | null;
   exit_reason: string | null;
   bars_held: number;
+  exit_rule: string;
+  partial_exit_date: string | null;
+  partial_exit_paise: number | null;
 }
 
 export interface PositionUpdateResult {
@@ -41,11 +49,9 @@ export interface PositionUpdateResult {
   target_hit: number;
   time_exit: number;
   breakeven_moved: number;
+  /** Positions whose scale-out rung filled on this replay. */
+  scaled_out: number;
 }
-
-const TIME_EXIT_BARS = 60;
-const BREAKEVEN_R_MULTIPLE = 1; // move stop to breakeven at +1R
-const TRAIL_R_MULTIPLE = 2; // trail with 20-day low above +2R
 
 interface Bar {
   trade_date: string;
@@ -78,10 +84,10 @@ function tokenForSymbol(db: Database.Database, symbol: string, exchange: string)
   return r?.instrument_token ?? null;
 }
 
-function donchianLow20(bars: Bar[]): number | null {
-  if (bars.length < 20) return null;
+function donchianLow(bars: Bar[], lookback: number): number | null {
+  if (bars.length < lookback) return null;
   let lo = Infinity;
-  for (let i = bars.length - 20; i < bars.length; i++) if (bars[i].low < lo) lo = bars[i].low;
+  for (let i = bars.length - lookback; i < bars.length; i++) if (bars[i].low < lo) lo = bars[i].low;
   return Number.isFinite(lo) ? lo : null;
 }
 
@@ -101,6 +107,9 @@ export function recordSignalAsPosition(
     stop_paise: number;
     target_paise: number;
     atr14_paise: number | null;
+    /** Rule to manage this position under. Defaults to the current live rule;
+     *  tests and replays of historical signals can pin an older one. */
+    exit_rule?: ExitRuleId;
   },
 ): boolean {
   const res = db
@@ -108,16 +117,137 @@ export function recordSignalAsPosition(
       `INSERT INTO open_positions(
          symbol, exchange, entry_scan_date, entry_scan_time, side,
          entry_paise, initial_stop_paise, current_stop_paise, target_paise, atr14_paise,
-         status, bars_held
+         status, bars_held, exit_rule
        )
-       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 0, ?)
        ON CONFLICT(symbol, exchange, entry_scan_date, side) DO NOTHING`,
     )
     .run(
       s.symbol, s.exchange, s.scan_date, s.scan_time, s.side,
       s.entry_paise, s.stop_paise, s.stop_paise, s.target_paise, s.atr14_paise,
+      s.exit_rule ?? CURRENT_EXIT_RULE,
     );
   return res.changes > 0;
+}
+
+/** Outcome of replaying one position's bars. Pure — the caller does the writes. */
+interface PositionReplayOutcome {
+  currentStop: number;
+  breakevenMoved: boolean;
+  /** Bars elapsed since entry, capped at the exit bar when one fired. */
+  barsHeld: number;
+  /** First filled rung, if any. Unsized, so only the fact and the price. */
+  partial: { date: string; pricePaise: number } | null;
+  exit: {
+    status: "stopped" | "target_hit" | "time_exit";
+    date: string;
+    pricePaise: number;
+    reason: string;
+  } | null;
+}
+
+/**
+ * Walk every bar since entry and derive the position's state under `rule`.
+ *
+ * Replays from the INITIAL stop, not the stored current one: this runs on every
+ * scan, so seeding from an already-ratcheted stop would test bars that predate
+ * the ratchet against it and book a fabricated scratch on a date the stop was
+ * never there.
+ */
+function replayPosition(
+  p: OpenPositionRow,
+  bars: Bar[],
+  barsAfter: Bar[],
+  rule: ExitRule,
+): PositionReplayOutcome {
+  let currentStop = p.initial_stop_paise;
+  let breakevenMoved = false;
+  const risk = p.entry_paise - p.initial_stop_paise; // positive
+  const level = (r: number) => p.entry_paise + r * risk;
+
+  let partial: PositionReplayOutcome["partial"] = null;
+  let nextRung = 0;
+
+  for (let i = 0; i < barsAfter.length; i++) {
+    const b = barsAfter[i];
+    const barsHeld = i + 1;
+
+    // Stop first — conservative on a gap-down.
+    if (b.low <= currentStop) {
+      return {
+        currentStop, breakevenMoved, barsHeld, partial,
+        exit: {
+          status: "stopped", date: b.trade_date, pricePaise: currentStop,
+          reason: `low ${b.low} pierced stop ${currentStop} on ${b.trade_date}`,
+        },
+      };
+    }
+
+    // Scale-out rungs, before the target check so a bar clearing both records
+    // the rung on the way through rather than skipping it.
+    let filledARung = false;
+    while (nextRung < rule.scaleOuts.length && b.high >= level(rule.scaleOuts[nextRung].r)) {
+      const rung = rule.scaleOuts[nextRung];
+      nextRung++;
+      filledARung = true;
+      // Only the first rung's price is recorded — there is no quantity here, so
+      // later rungs add no information a sized tracker would need.
+      if (partial === null) {
+        partial = { date: b.trade_date, pricePaise: Math.round(level(rung.r)) };
+      }
+    }
+
+    if (filledARung && rule.breakevenAfterPartial && currentStop < p.entry_paise) {
+      currentStop = p.entry_paise;
+      breakevenMoved = true;
+      // Re-check THIS bar against the raised stop, so a bar that ran up through
+      // the rung and back below entry doesn't carry to the next bar for free.
+      if (b.low <= currentStop) {
+        return {
+          currentStop, breakevenMoved, barsHeld, partial,
+          exit: {
+            status: "stopped", date: b.trade_date, pricePaise: currentStop,
+            reason: `low ${b.low} pierced the post-scale-out breakeven stop ${currentStop} on ${b.trade_date}`,
+          },
+        };
+      }
+    }
+
+    if (b.high >= p.target_paise) {
+      return {
+        currentStop, breakevenMoved, barsHeld, partial,
+        exit: {
+          status: "target_hit", date: b.trade_date, pricePaise: p.target_paise,
+          reason: `high ${b.high} reached target ${p.target_paise} on ${b.trade_date}`,
+        },
+      };
+    }
+
+    // Ratchets use the CLOSE so a wick can't trigger a false breakeven.
+    if (rule.breakevenRMultiple !== null && b.close >= level(rule.breakevenRMultiple) && currentStop < p.entry_paise) {
+      currentStop = p.entry_paise;
+      breakevenMoved = true;
+    }
+    if (rule.trailRMultiple !== null && b.close >= level(rule.trailRMultiple)) {
+      const upTo = bars.filter((x) => x.trade_date <= b.trade_date);
+      const trail = donchianLow(upTo, rule.trailLookback);
+      if (trail !== null && trail > currentStop) currentStop = trail;
+    }
+
+    // Time cap per bar, so it fires on the bar it's due rather than on whatever
+    // the latest bar happens to be when the scanner next runs.
+    if (barsHeld >= rule.timeExitBars) {
+      return {
+        currentStop, breakevenMoved, barsHeld, partial,
+        exit: {
+          status: "time_exit", date: b.trade_date, pricePaise: b.close,
+          reason: `${rule.timeExitBars} trading days elapsed`,
+        },
+      };
+    }
+  }
+
+  return { currentStop, breakevenMoved, barsHeld: barsAfter.length, partial, exit: null };
 }
 
 /**
@@ -128,6 +258,7 @@ export function recordSignalAsPosition(
 export function updateOpenPositions(db: Database.Database): PositionUpdateResult {
   const result: PositionUpdateResult = {
     opened: 0, updated: 0, stopped: 0, target_hit: 0, time_exit: 0, breakeven_moved: 0,
+    scaled_out: 0,
   };
 
   const rows = db
@@ -136,10 +267,13 @@ export function updateOpenPositions(db: Database.Database): PositionUpdateResult
   if (rows.length === 0) return result;
 
   const updateStop = db.prepare(
-    `UPDATE open_positions SET current_stop_paise = ?, bars_held = ? WHERE symbol = ? AND exchange = ? AND entry_scan_date = ? AND side = ?`,
+    `UPDATE open_positions SET current_stop_paise = ?, bars_held = ?,
+                               partial_exit_date = ?, partial_exit_paise = ?
+     WHERE symbol = ? AND exchange = ? AND entry_scan_date = ? AND side = ?`,
   );
   const closePosition = db.prepare(
-    `UPDATE open_positions SET status = ?, exit_date = ?, exit_paise = ?, exit_reason = ?, bars_held = ?
+    `UPDATE open_positions SET status = ?, exit_date = ?, exit_paise = ?, exit_reason = ?, bars_held = ?,
+                               partial_exit_date = ?, partial_exit_paise = ?
      WHERE symbol = ? AND exchange = ? AND entry_scan_date = ? AND side = ?`,
   );
 
@@ -147,75 +281,40 @@ export function updateOpenPositions(db: Database.Database): PositionUpdateResult
     for (const p of rows) {
       const token = tokenForSymbol(db, p.symbol, p.exchange);
       if (token === null) continue; // universe row missing; skip silently
-      // Bars since entry (exclusive). Load a 20-bar lookback window for
-      // trailing-stop computation too.
+      // Bars since entry, plus the lookback window the trailing stop needs.
       const bars = loadBarsSince(db, token, p.entry_scan_date);
-      // Bars *since* entry — strictly after entry date. Screener bars share the
-      // entry_scan_date row too; we consider "bars_held" = count where
-      // trade_date > entry_scan_date.
+      // Bars *since* entry — strictly after the entry date, which has its own
+      // bar in ohlc_daily.
       const barsAfter = bars.filter((b) => b.trade_date > p.entry_scan_date);
-      const barsHeld = barsAfter.length;
 
-      // Walk each bar chronologically. First trigger wins.
-      let closed = false;
-      let currentStop = p.current_stop_paise;
-      let breakevenMoved = false;
-      const risk = p.entry_paise - p.initial_stop_paise; // positive
-      const oneR = p.entry_paise + BREAKEVEN_R_MULTIPLE * risk;
-      const twoR = p.entry_paise + TRAIL_R_MULTIPLE * risk;
+      // Managed under the rule it was OPENED on, not today's.
+      const rule = resolveExitRule(p.exit_rule);
+      const r = replayPosition(p, bars, barsAfter, rule);
+      if (r.partial) result.scaled_out++;
 
-      for (const b of barsAfter) {
-        // Stop / target check (stop first — conservative in a gap-down)
-        if (b.low <= currentStop) {
-          closePosition.run(
-            "stopped", b.trade_date, currentStop, `low ${b.low} pierced stop ${currentStop} on ${b.trade_date}`,
-            barsHeld, p.symbol, p.exchange, p.entry_scan_date, p.side,
-          );
-          result.stopped++;
-          closed = true;
-          break;
-        }
-        if (b.high >= p.target_paise) {
-          closePosition.run(
-            "target_hit", b.trade_date, p.target_paise, `high ${b.high} reached target ${p.target_paise} on ${b.trade_date}`,
-            barsHeld, p.symbol, p.exchange, p.entry_scan_date, p.side,
-          );
-          result.target_hit++;
-          closed = true;
-          break;
-        }
-        // Not exited — update stop if we crossed +1R (breakeven) or +2R (trail).
-        // Use close so we don't false-breakeven on a wick.
-        if (b.close >= oneR && currentStop < p.entry_paise) {
-          currentStop = p.entry_paise;
-          breakevenMoved = true;
-        }
-        if (b.close >= twoR) {
-          // Compute trailing 20-day low as of THIS bar.
-          const upTo = bars.filter((x) => x.trade_date <= b.trade_date);
-          const trail = donchianLow20(upTo);
-          if (trail !== null && trail > currentStop) currentStop = trail;
-        }
+      if (r.exit) {
+        closePosition.run(
+          r.exit.status, r.exit.date, r.exit.pricePaise, r.exit.reason, r.barsHeld,
+          r.partial?.date ?? null, r.partial?.pricePaise ?? null,
+          p.symbol, p.exchange, p.entry_scan_date, p.side,
+        );
+        result[r.exit.status]++;
+        continue;
       }
 
-      if (!closed) {
-        // Time exit?
-        if (barsHeld >= TIME_EXIT_BARS) {
-          const latestClose = barsAfter[barsAfter.length - 1]?.close ?? p.entry_paise;
-          const latestDate = barsAfter[barsAfter.length - 1]?.trade_date ?? p.entry_scan_date;
-          closePosition.run(
-            "time_exit", latestDate, latestClose, `${TIME_EXIT_BARS} trading days elapsed`,
-            barsHeld, p.symbol, p.exchange, p.entry_scan_date, p.side,
-          );
-          result.time_exit++;
-          continue;
-        }
-        // Persist stop movement + bars_held even when no exit.
-        if (currentStop !== p.current_stop_paise || barsHeld !== p.bars_held) {
-          updateStop.run(currentStop, barsHeld, p.symbol, p.exchange, p.entry_scan_date, p.side);
-          result.updated++;
-          if (breakevenMoved) result.breakeven_moved++;
-        }
+      // Persist stop movement, bars_held and any rung fill even when still open.
+      if (
+        r.currentStop !== p.current_stop_paise ||
+        r.barsHeld !== p.bars_held ||
+        (r.partial?.date ?? null) !== p.partial_exit_date
+      ) {
+        updateStop.run(
+          r.currentStop, r.barsHeld,
+          r.partial?.date ?? null, r.partial?.pricePaise ?? null,
+          p.symbol, p.exchange, p.entry_scan_date, p.side,
+        );
+        result.updated++;
+        if (r.breakevenMoved) result.breakeven_moved++;
       }
     }
   });
@@ -238,18 +337,23 @@ export interface ActivePosition {
   latest_close_paise: number | null;
   unrealized_pct: number | null;
   moved_to_breakeven: boolean;
+  /** A scale-out rung has filled — the digest flags these as part-booked. */
+  scaled_out: boolean;
+  partial_exit_paise: number | null;
 }
 export function loadActivePositions(db: Database.Database): ActivePosition[] {
   const rows = db
     .prepare(
       `SELECT symbol, exchange, entry_scan_date, entry_paise, initial_stop_paise,
-              current_stop_paise, target_paise, bars_held
+              current_stop_paise, target_paise, bars_held,
+              partial_exit_date, partial_exit_paise
        FROM open_positions WHERE status = 'open'
        ORDER BY entry_scan_date ASC`,
     )
     .all() as {
     symbol: string; exchange: string; entry_scan_date: string; entry_paise: number;
     initial_stop_paise: number; current_stop_paise: number; target_paise: number; bars_held: number;
+    partial_exit_date: string | null; partial_exit_paise: number | null;
   }[];
   return rows.map((r) => {
     const token = tokenForSymbol(db, r.symbol, r.exchange);
@@ -272,6 +376,9 @@ export function loadActivePositions(db: Database.Database): ActivePosition[] {
       latest_close_paise: latest,
       unrealized_pct,
       moved_to_breakeven: r.current_stop_paise >= r.entry_paise,
+      scaled_out: r.partial_exit_date !== null,
+      partial_exit_paise: r.partial_exit_paise,
     };
   });
 }
+

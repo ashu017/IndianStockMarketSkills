@@ -39,3 +39,4 @@ export function gainBadgeClass(value: number): string {
     ? "bg-emerald-50 text-emerald-700"
     : "bg-red-50 text-red-700";
 }
+

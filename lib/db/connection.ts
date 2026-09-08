@@ -16,3 +16,4 @@ export function getDb(): Database.Database {
   g.__portfolioDb = db;
   return db;
 }
+

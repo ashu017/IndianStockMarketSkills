@@ -4,6 +4,7 @@ import {
   atr,
   donchianLow,
   volAdjMomentum,
+  volAdjMomentumYZ,
   avgVolume,
   goldenCross,
   isDonchianBreakout,
@@ -47,8 +48,14 @@ export const TECHNICAL_THRESHOLDS = {
   DONCHIAN_LOOKBACK: 20,
   VOL_SURGE_MIN: 1.5, // × 20-day avg
   ATR_PERIOD: 14,
-  STOP_ATR_MULT: 2, // stop = entry − 2×ATR14 (or 20-day low, whichever is higher)
-  TARGET_R_MULTIPLE: 3, // target = entry + 3×(entry − stop)
+  // Entry-plan geometry for the CURRENT exit rule (v2_scaleout, live since
+  // 2026-08-31). Tightened from 2×ATR/3R when the scale-out rule was promoted:
+  // the tighter stop shortens the horizon, and 5R is reachable because half the
+  // position is already banked at 1.5R so the runner isn't paying for the
+  // distance. Positions opened on the old plan keep their persisted 2×ATR/3R
+  // levels — see lib/exit-rules.ts.
+  STOP_ATR_MULT: 1.75, // stop = entry − 1.75×ATR14 (or 20-day low, whichever is higher)
+  TARGET_R_MULTIPLE: 5, // target = entry + 5×(entry − stop)
   MOMENTUM_LOOKBACK: 252,
   MOMENTUM_SKIP: 21,
 } as const;
@@ -370,7 +377,14 @@ export function evaluate(input: EvaluateInput): StockVerdict {
         volNote = `intraday-extrapolated: raw ${lastVol.toLocaleString()} ÷ ${frac.toFixed(2)} = ${Math.round(extrapolatedVol).toLocaleString()} full-day equiv`;
       }
     }
-    const mom = volAdjMomentum(closes, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP);
+    // Momentum denominator: default is close-to-close stdev (backwards compatible).
+    // Set VOL_ESTIMATOR=yang_zhang to switch to the Yang-Zhang OHLC estimator,
+    // which captures overnight gaps + intraday range — much better for gappy
+    // Indian equities. Env-gated so we can A/B cleanly without a schema change.
+    const useYZ = process.env.VOL_ESTIMATOR === "yang_zhang";
+    const mom = useYZ
+      ? volAdjMomentumYZ(bars, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP)
+      : volAdjMomentum(closes, TECHNICAL_THRESHOLDS.MOMENTUM_LOOKBACK, TECHNICAL_THRESHOLDS.MOMENTUM_SKIP);
     const atr14 = atr(bars, TECHNICAL_THRESHOLDS.ATR_PERIOD);
     const dLow20 = donchianLow(lows, TECHNICAL_THRESHOLDS.DONCHIAN_LOOKBACK);
 
@@ -521,3 +535,4 @@ export function evaluateFromDb(
     ohlc,
   });
 }
+
